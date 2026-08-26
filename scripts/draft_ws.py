@@ -8,7 +8,7 @@ the draft room actually holds a websocket to a separate host,
 frame verbatim to a JSONL fixture, so a parser can be built against a
 recording instead of a live draft:
 
-    scripts/draft_ws.py --record OUT.jsonl --league-id N --team-id N
+    scripts/draft_ws.py --record OUT.jsonl
 
 No parsing happens on `--record` on purpose -- it captures raw frames.
 `--replay` feeds a recorded (or hand-captured) fixture through
@@ -17,24 +17,25 @@ fixture-rehearsal pattern `draft_sync.py --replay` already uses.
 
     scripts/draft_ws.py --replay data/ws-live-test.jsonl
 
-Session id: ESPN's own room tab used a token whose trailing field looks like
-a per-connection session id, and the host appears to only tolerate one live
-connection per token -- reusing an active session id disconnects the other
-holder ("Duplicate Connection"). This script always mints its own random
-session id rather than reusing one from `.env` or a captured URL, so running
-it alongside someone's real draft-room tab does not kick them off. That
-assumption still needs to be verified against a real practice draft before
-this is trusted on Sep 2 -- see HANDOFF.md item 2.
+Token: the host tolerates only one live connection per token -- reusing an
+active session's token disconnects the other holder ("Duplicate Connection"),
+and per Mark this is per-account, not per-token (a second browser hits the
+same wall). So there is no session id to mint: `--record` connects using the
+exact JOIN URL Mark captures by hand from his own browser's DevTools (Network
+tab -> WS filter -> the JOIN request's full URL) and pastes into
+`data/join-url.txt` (or a path given with `--join-url-file`). leagueId and
+teamId are parsed back out of that URL for the console log and the Referer
+header; the token itself is used verbatim, never reconstructed.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import random
 import re
 import sys
 import time
+import urllib.parse
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -48,6 +49,7 @@ from ff import config, draft_state, draft_sync, draft_ws
 console = Console()
 VALUES_PATH = Path(__file__).resolve().parents[1] / "data" / "values.json"
 SCRATCH_STATE_PATH = Path(__file__).resolve().parents[1] / "data" / "cache" / "draft-ws-state-replay.json"
+DEFAULT_JOIN_URL_FILE = Path(__file__).resolve().parents[1] / "data" / "join-url.txt"
 
 # TOKEN <gameId>:<leagueId>:<teamId>:<swid>:<sessionId> -- SWID and sessionId are
 # per-account auth material and must never land in a recording on disk.
@@ -58,29 +60,38 @@ def redact_token(msg: str) -> str:
     return _TOKEN_RE.sub(lambda m: m.group(1) + "{REDACTED-SWID}:REDACTED-SESSION", msg)
 
 
-GAME_ID = "1"
-GAME_CODE = "KONA"  # ESPN's internal codename for this product; fixed in the captured URL
+def load_join_url(path: Path) -> str:
+    if not path.exists():
+        raise SystemExit(
+            f"No join URL at {path}. Open the draft room, copy the JOIN request's full URL "
+            "from DevTools (Network tab -> WS filter), and paste it into that file."
+        )
+    url = path.read_text().strip()
+    if not url:
+        raise SystemExit(f"{path} is empty.")
+    return url
 
 
-def _join_url(cred: config.EspnCredentials, session_id: int) -> str:
-    token = f"{GAME_ID}:{cred.league_id}:{cred.team_id}:{cred.swid}:{session_id}"
-    nocache = random.randint(100000, 999999)
-    return (
-        f"wss://fantasydraft.espn.com/game-{GAME_ID}/league-{cred.league_id}/JOIN"
-        f"?1={GAME_ID}&2={cred.league_id}&3={cred.team_id}&4={cred.swid}&5={token}"
-        f"&6=false&7=false&8={GAME_CODE}&nocache={nocache}"
-    )
+def parse_join_url(url: str) -> tuple[str, str]:
+    """Pull leagueId and teamId out of a pasted JOIN URL, for the console log
+    and the Referer header. The token and the rest of the query string are
+    used verbatim from `url` -- never reconstructed."""
+    query = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
+    try:
+        league_id = query["2"][0]
+        team_id = query["3"][0]
+    except (KeyError, IndexError) as exc:
+        raise SystemExit(f"Could not find leagueId/teamId in the join URL: {exc}") from exc
+    return league_id, team_id
 
 
-def cmd_record(out_path: Path, cred: config.EspnCredentials, duration: int | None) -> int:
+def cmd_record(out_path: Path, join_url: str, cred: config.EspnCredentials, duration: int | None) -> int:
     if not cred.has_private_auth:
         console.print("[red]ESPN_SWID / ESPN_S2 required.[/red]")
         return 1
 
-    session_id = random.randint(100_000_000, 999_999_999)
-    url = _join_url(cred, session_id)
-    console.print(f"Connecting to league {cred.league_id} as team {cred.team_id}, "
-                  f"session {session_id} (own -- not Mark's live session).")
+    league_id, team_id = parse_join_url(join_url)
+    console.print(f"Connecting to league {league_id} as team {team_id} (from pasted join URL).")
     console.print(f"Logging every frame to {out_path}. Ctrl-C to stop.")
 
     fh = out_path.open("a")
@@ -104,11 +115,11 @@ def cmd_record(out_path: Path, cred: config.EspnCredentials, duration: int | Non
         console.print(f"[yellow]closed:[/yellow] {code} {msg}")
 
     ws = websocket.WebSocketApp(
-        url,
+        join_url,
         cookie=f"espn_s2={cred.espn_s2}; SWID={cred.swid}",
         header=[
             "Origin: https://fantasy.espn.com",
-            f"Referer: https://fantasy.espn.com/football/draft?leagueId={cred.league_id}",
+            f"Referer: https://fantasy.espn.com/football/draft?leagueId={league_id}",
             "User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
             "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
         ],
@@ -184,8 +195,8 @@ def main() -> int:
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--record", metavar="PATH", help="append raw frames to a JSONL fixture")
     group.add_argument("--replay", metavar="PATH", help="replay a JSONL fixture through the parser")
-    parser.add_argument("--league-id", help="override ESPN_LEAGUE_ID (e.g. a practice draft)")
-    parser.add_argument("--team-id", help="override ESPN_TEAM_ID")
+    parser.add_argument("--join-url-file", type=Path, default=DEFAULT_JOIN_URL_FILE,
+                        help=f"file holding the pasted JOIN URL (default: {DEFAULT_JOIN_URL_FILE})")
     parser.add_argument("--duration", type=int, default=None,
                         help="stop after N seconds for --record (default: run until Ctrl-C)")
     args = parser.parse_args()
@@ -194,12 +205,8 @@ def main() -> int:
         return cmd_replay(Path(args.replay))
 
     cred = config.EspnCredentials()
-    if args.league_id:
-        cred.league_id = args.league_id
-    if args.team_id:
-        cred.team_id = args.team_id
-
-    return cmd_record(Path(args.record), cred, args.duration)
+    join_url = load_join_url(args.join_url_file)
+    return cmd_record(Path(args.record), join_url, cred, args.duration)
 
 
 if __name__ == "__main__":
