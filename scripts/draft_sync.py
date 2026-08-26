@@ -28,9 +28,9 @@ console = Console()
 VALUES_PATH = Path(__file__).resolve().parents[1] / "data" / "values.json"
 
 
-def cmd_once() -> int:
+def cmd_once(cred: config.EspnCredentials) -> int:
     try:
-        detail = draft_sync.fetch_picks()
+        detail = draft_sync.fetch_picks(cred)
     except draft_sync.DraftFeedError as exc:
         console.print(f"[red]Feed unreachable:[/red] {exc}")
         return 1
@@ -45,13 +45,14 @@ def cmd_once() -> int:
     return 0
 
 
-def cmd_record(out_path: Path, interval: int) -> int:
-    console.print(f"Recording live draft snapshots to {out_path} every {interval}s. Ctrl-C to stop.")
+def cmd_record(out_path: Path, interval: int, cred: config.EspnCredentials) -> int:
+    console.print(f"Recording live draft snapshots (league {cred.league_id}) "
+                  f"to {out_path} every {interval}s. Ctrl-C to stop.")
     with out_path.open("a") as fh:
         try:
             while True:
                 try:
-                    detail = draft_sync.fetch_picks()
+                    detail = draft_sync.fetch_picks(cred)
                     fh.write(json.dumps(detail) + "\n")
                     fh.flush()
                     done = len(draft_sync.completed(detail.get("picks", [])))
@@ -117,12 +118,20 @@ def main() -> int:
     group.add_argument("--record", metavar="PATH", help="append live snapshots to a JSONL fixture")
     group.add_argument("--replay", metavar="PATH", help="replay a JSONL fixture through import")
     parser.add_argument("--interval", type=int, default=10, help="seconds between polls for --record")
+    parser.add_argument("--league-id", help="override ESPN_LEAGUE_ID (e.g. a practice draft)")
+    parser.add_argument("--team-id", help="override ESPN_TEAM_ID")
     args = parser.parse_args()
 
+    cred = config.EspnCredentials()
+    if args.league_id:
+        cred.league_id = args.league_id
+    if args.team_id:
+        cred.team_id = args.team_id
+
     if args.once:
-        return cmd_once()
+        return cmd_once(cred)
     if args.record:
-        return cmd_record(Path(args.record), args.interval)
+        return cmd_record(Path(args.record), args.interval, cred)
     return cmd_replay(Path(args.replay))
 
 

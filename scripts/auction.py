@@ -225,6 +225,8 @@ def main() -> int:
     parser.add_argument("--interval", type=int, default=3,
                         help="seconds between background polls (default 3)")
     parser.add_argument("--my-team", help="team label to use for 'me'/'need'")
+    parser.add_argument("--league-id", help="override ESPN_LEAGUE_ID (e.g. a practice draft)")
+    parser.add_argument("--team-id", help="override ESPN_TEAM_ID")
     args = parser.parse_args()
 
     vals = load_values()
@@ -233,19 +235,24 @@ def main() -> int:
         state.my_team = draft_state.normalize_team(args.my_team)
     lookup = {v.name.lower(): v for v in vals}
 
+    cred = config.EspnCredentials()
+    if args.league_id:
+        cred.league_id = args.league_id
+    if args.team_id:
+        cred.team_id = args.team_id
+
     sync: SyncController | None = None
     if not args.no_sync:
         resolver = draft_sync.PlayerResolver(VALUES_PATH)
         if args.replay:
             source = _replay_source(Path(args.replay))
         else:
-            cred = config.EspnCredentials()
             source = lambda: draft_sync.fetch_picks(cred)  # noqa: E731
         sync = SyncController(source, resolver, args.interval)
         sync.start()
 
     sync_note = "auto-sync every %ds" % args.interval if sync else "sync disabled, manual only"
-    console.print(f"[bold]Auction console[/bold] -- {config.LEAGUE_NAME}, "
+    console.print(f"[bold]Auction console[/bold] -- {config.LEAGUE_NAME}, league {cred.league_id}, "
                   f"${config.SALARY_CAP} cap, {config.ROSTER_SIZE} spots, {sync_note}. "
                   f"{len(state.purchases)} purchases loaded. Type 'quit' to exit.\n")
 
