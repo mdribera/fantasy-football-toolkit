@@ -2,14 +2,9 @@
 .env
 .env.local
 
-# Cached data pulls
-data/cache/
-data/*.json
-data/*.csv
+# Cached data pulls, draft state, recordings
+data/*
 !data/.gitkeep
-
-# Draft state
-data/draft-*.json
 
 # Python
 __pycache__/
