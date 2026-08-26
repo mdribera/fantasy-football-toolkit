@@ -10,9 +10,12 @@ recording instead of a live draft:
 
     scripts/draft_ws.py --record OUT.jsonl --league-id N --team-id N
 
-No parsing happens here on purpose. `--record` captures raw frames; a later
-module turns `sold`/`bid` frames into ResolvedPick the same way draft_sync.py
-turns mDraftDetail rows into ResolvedPick.
+No parsing happens on `--record` on purpose -- it captures raw frames.
+`--replay` feeds a recorded (or hand-captured) fixture through
+`ff.draft_ws.parse_frame` and a scratch `DraftState`, the same
+fixture-rehearsal pattern `draft_sync.py --replay` already uses.
+
+    scripts/draft_ws.py --replay data/ws-live-test.jsonl
 
 Session id: ESPN's own room tab used a token whose trailing field looks like
 a per-connection session id, and the host appears to only tolerate one live
@@ -37,11 +40,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from rich.console import Console
+from rich.table import Table
 import websocket
 
-from ff import config
+from ff import config, draft_state, draft_sync, draft_ws
 
 console = Console()
+VALUES_PATH = Path(__file__).resolve().parents[1] / "data" / "values.json"
+SCRATCH_STATE_PATH = Path(__file__).resolve().parents[1] / "data" / "cache" / "draft-ws-state-replay.json"
 
 # TOKEN <gameId>:<leagueId>:<teamId>:<swid>:<sessionId> -- SWID and sessionId are
 # per-account auth material and must never land in a recording on disk.
@@ -80,16 +86,12 @@ def cmd_record(out_path: Path, cred: config.EspnCredentials, duration: int | Non
     fh = out_path.open("a")
     start = time.monotonic()
 
-    def _log(direction: str, raw: str) -> None:
-        try:
-            payload = json.loads(raw)
-        except ValueError:
-            payload = redact_token(raw)
-        fh.write(json.dumps({"ts": time.time(), "dir": direction, "payload": payload}) + "\n")
+    def _log(msg: str) -> None:
+        fh.write(json.dumps({"ts": time.time(), "msg": redact_token(msg)}) + "\n")
         fh.flush()
 
     def on_message(ws, message):
-        _log("recv", message)
+        _log(message)
         console.print(f"[dim]{time.strftime('%H:%M:%S')}[/dim] recv {message[:120]}")
 
     def on_open(ws):
@@ -130,15 +132,66 @@ def cmd_record(out_path: Path, cred: config.EspnCredentials, duration: int | Non
     return 0
 
 
+def _replay_pass(path: Path, resolver: draft_sync.PlayerResolver,
+                  state: draft_state.DraftState) -> tuple[int, int]:
+    imported = duplicates = 0
+    for msg in draft_ws.iter_frames(path):
+        event = draft_ws.parse_frame(msg)
+        if isinstance(event, draft_ws.WsError):
+            console.print(f"[yellow]unparsed frame:[/yellow] {event.raw!r} ({event.reason})")
+            continue
+        if not isinstance(event, draft_ws.Sold):
+            continue
+        # Each player sells at most once, so the ESPN playerId is a natural
+        # stable dedupe key -- there's no per-slot pick id on this protocol
+        # the way mDraftDetail has one.
+        name, position = resolver.resolve(event.player_id)
+        team = config.TEAMS.get(event.team_id, f"TEAM{event.team_id}")
+        recorded = state.record_pick(name, position, event.price, team,
+                                      espn_pick_id=event.player_id)
+        imported += 1 if recorded else 0
+        duplicates += 0 if recorded else 1
+    return imported, duplicates
+
+
+def cmd_replay(in_path: Path) -> int:
+    resolver = draft_sync.PlayerResolver(VALUES_PATH)
+    # A dedicated scratch path, never the live data/draft-state.json -- a
+    # rehearsal must never be able to clobber real draft-day state.
+    state = draft_state.DraftState(my_team="ME", state_path=SCRATCH_STATE_PATH)
+
+    imported, duplicates = _replay_pass(in_path, resolver, state)
+    console.print(f"Imported {imported} picks, {duplicates} duplicates suppressed.")
+
+    # Replaying the identical file again should add nothing: proves the
+    # playerId dedup holds across a full pass, the same guarantee that
+    # protects the live poller from double-recording a sale it sees twice.
+    reimported, _ = _replay_pass(in_path, resolver, state)
+    console.print(f"Second pass imported {reimported} new picks (0 expected).")
+
+    table = Table(title="Reconciliation")
+    table.add_column("Team")
+    table.add_column("Spent", justify="right")
+    for team in state.all_teams():
+        if state.spent_by(team):
+            table.add_row(team, f"${state.spent_by(team)}")
+    console.print(table)
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--record", metavar="PATH", required=True,
-                        help="append raw frames to a JSONL fixture")
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("--record", metavar="PATH", help="append raw frames to a JSONL fixture")
+    group.add_argument("--replay", metavar="PATH", help="replay a JSONL fixture through the parser")
     parser.add_argument("--league-id", help="override ESPN_LEAGUE_ID (e.g. a practice draft)")
     parser.add_argument("--team-id", help="override ESPN_TEAM_ID")
     parser.add_argument("--duration", type=int, default=None,
-                        help="stop after N seconds (default: run until Ctrl-C)")
+                        help="stop after N seconds for --record (default: run until Ctrl-C)")
     args = parser.parse_args()
+
+    if args.replay:
+        return cmd_replay(Path(args.replay))
 
     cred = config.EspnCredentials()
     if args.league_id:

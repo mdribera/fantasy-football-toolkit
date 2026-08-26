@@ -19,7 +19,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from rich.console import Console
 from rich.table import Table
 
-from ff import config, draft_state, draft_sync, scoring, values
+from ff import config, draft_state, draft_sync, draft_ws, scoring, values
+
+WS_FIXTURE_PATH = Path(__file__).resolve().parents[1] / "data" / "ws-live-test.jsonl"
 
 console = Console()
 
@@ -129,8 +131,55 @@ def test_draft_sync() -> None:
                   "undo-suppression all hold.[/green]\n")
 
 
+def test_draft_ws() -> None:
+    """Exercise the draft-room websocket parser.
+
+    The literal frame strings below are lifted verbatim from a genuine
+    practice-draft capture (2026-08-26, see docs/draft-ws-plan.md), so this
+    doubles as regression coverage against the one schema doubt that capture
+    already resolved: BID's amount is field 3, not the constant field 4.
+    """
+    console.print("[bold]Draft websocket parser[/bold]")
+
+    assert draft_ws.parse_frame("AUTODRAFT 6 false\n") == draft_ws.Autodraft(6, False)
+    assert draft_ws.parse_frame("PASSED 6 3915511 false\n") == draft_ws.Passed(6, 3915511, False)
+    assert draft_ws.parse_frame("BID 10 3915511 42 25000 12731\n") == \
+        draft_ws.Bid(10, 3915511, 42, 25000, 12731)
+    assert draft_ws.parse_frame("CLOCK 2 12982 11 3915511 41\n") == \
+        draft_ws.Clock(2, 12982, 11, 3915511, 41)
+    assert draft_ws.parse_frame("CLOCK 3 1248\n") == draft_ws.Clock(3, 1248)
+    assert draft_ws.parse_frame("SOLD 7 3915511 1 43 0\n") == draft_ws.Sold(7, 3915511, 1, 43, 0)
+    assert draft_ws.parse_frame("NOMINATION 1 25000\n") == draft_ws.Nomination(1, 25000)
+    assert draft_ws.parse_frame("AUTOSUGGEST 4431452\n") == draft_ws.AutoSuggest(4431452)
+    assert draft_ws.parse_frame("TOKEN 1:1721228630:6:{REDACTED-SWID}:REDACTED-SESSION\n") == \
+        draft_ws.Joined(1, 1721228630, 6, "{REDACTED-SWID}", "REDACTED-SESSION")
+    assert draft_ws.parse_frame("INIT abc123\n") == draft_ws.Init("abc123")
+
+    short_bid = draft_ws.parse_frame("BID 1 2 3\n")
+    assert isinstance(short_bid, draft_ws.WsError), "a short BID must not raise or silently mis-parse"
+    unknown_kind = draft_ws.parse_frame("FOOBAR 1 2 3\n")
+    assert isinstance(unknown_kind, draft_ws.WsError), "an unrecognized frame kind must not raise"
+
+    if not WS_FIXTURE_PATH.exists():
+        console.print("[yellow]data/ws-live-test.jsonl not present locally "
+                       "(gitignored) -- skipping the full-capture replay check.[/yellow]\n")
+        return
+
+    events = [draft_ws.parse_frame(msg) for msg in draft_ws.iter_frames(WS_FIXTURE_PATH)]
+    errors = [e for e in events if isinstance(e, draft_ws.WsError)]
+    assert not errors, f"every frame in a real capture must parse: {errors}"
+
+    sales = [e for e in events if isinstance(e, draft_ws.Sold)]
+    assert len(sales) == 1 and sales[0].price == 43, \
+        "the one completed sale in the fixture must match ESPN's on-screen price"
+
+    console.print(f"[green]{len(events)} frames parsed clean against the real capture, "
+                  f"{len(sales)} sale(s) matched against the recap.[/green]\n")
+
+
 def main() -> int:
     test_draft_sync()
+    test_draft_ws()
 
     console.print("[bold]Scoring engine[/bold]")
     qb = scoring.score_offense(
