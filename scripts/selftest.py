@@ -22,6 +22,7 @@ from rich.table import Table
 from ff import config, draft_state, draft_sync, draft_ws, scoring, values
 
 WS_FIXTURE_PATH = Path(__file__).resolve().parents[1] / "data" / "ws-live-test.jsonl"
+WS_HAR_FIXTURE_PATH = Path(__file__).resolve().parents[1] / "data" / "ws-from-har.jsonl"
 
 console = Console()
 
@@ -145,36 +146,74 @@ def test_draft_ws() -> None:
     assert draft_ws.parse_frame("PASSED 6 3915511 false\n") == draft_ws.Passed(6, 3915511, False)
     assert draft_ws.parse_frame("BID 10 3915511 42 25000 12731\n") == \
         draft_ws.Bid(10, 3915511, 42, 25000, 12731)
+    assert draft_ws.parse_frame("CLOCK 0 28068\n") == draft_ws.Clock(0, 28068)
+    assert draft_ws.parse_frame("CLOCK 1 25000 11\n") == draft_ws.Clock(1, 25000, nominating_team=11)
     assert draft_ws.parse_frame("CLOCK 2 12982 11 3915511 41\n") == \
-        draft_ws.Clock(2, 12982, 11, 3915511, 41)
+        draft_ws.Clock(2, 12982, high_bid_team=11, player_id=3915511, high_bid_amount=41)
     assert draft_ws.parse_frame("CLOCK 3 1248\n") == draft_ws.Clock(3, 1248)
     assert draft_ws.parse_frame("SOLD 7 3915511 1 43 0\n") == draft_ws.Sold(7, 3915511, 1, 43, 0)
     assert draft_ws.parse_frame("NOMINATION 1 25000\n") == draft_ws.Nomination(1, 25000)
     assert draft_ws.parse_frame("AUTOSUGGEST 4431452\n") == draft_ws.AutoSuggest(4431452)
     assert draft_ws.parse_frame("TOKEN 1:1721228630:6:{REDACTED-SWID}:REDACTED-SESSION\n") == \
-        draft_ws.Joined(1, 1721228630, 6, "{REDACTED-SWID}", "REDACTED-SESSION")
+        draft_ws.Token(1, 1721228630, 6, "{REDACTED-SWID}", "REDACTED-SESSION")
     assert draft_ws.parse_frame("INIT abc123\n") == draft_ws.Init("abc123")
+    assert draft_ws.parse_frame("JOINED 6 {REDACTED}\n") == draft_ws.Joined(6, "{REDACTED}")
+    assert draft_ws.parse_frame("PONG PING%201787783293012\n") == draft_ws.Pong("PING%201787783293012")
+    assert draft_ws.parse_frame("BID_ACK 6 4426348 56\n") == draft_ws.BidAck(6, 4426348, 56)
+    assert draft_ws.parse_frame("DRAFT_LIST 3918298 3916387\n") == draft_ws.DraftList((3918298, 3916387))
+    assert draft_ws.parse_frame("STATE 1\n") == draft_ws.State(1)
+
+    # Client-to-server frames, confirmed from a HAR capture -- parsed here for
+    # decoder coverage only, never sent.
+    assert draft_ws.parse_frame("PING PING%201787783293012\n") == draft_ws.Ping("PING%201787783293012")
+    assert draft_ws.parse_frame("BID 4426348 56\n") == draft_ws.BidCommand(4426348, 56)
+    assert draft_ws.parse_frame("NOMINATE 4426502 1\n") == draft_ws.Nominate(4426502, 1)
+    assert draft_ws.parse_frame("PRENOMINATE 3918298 1 3916387 1\n") == \
+        draft_ws.Prenominate(((3918298, 1), (3916387, 1)))
+    assert draft_ws.parse_frame("AUTO_NOMINATION 4262921\n") == draft_ws.AutoNomination(4262921)
 
     short_bid = draft_ws.parse_frame("BID 1 2 3\n")
-    assert isinstance(short_bid, draft_ws.WsError), "a short BID must not raise or silently mis-parse"
+    assert isinstance(short_bid, draft_ws.WsError), "a 3-field BID must not raise or silently mis-parse"
     unknown_kind = draft_ws.parse_frame("FOOBAR 1 2 3\n")
     assert isinstance(unknown_kind, draft_ws.WsError), "an unrecognized frame kind must not raise"
 
     if not WS_FIXTURE_PATH.exists():
         console.print("[yellow]data/ws-live-test.jsonl not present locally "
-                       "(gitignored) -- skipping the full-capture replay check.[/yellow]\n")
+                       "(gitignored) -- skipping the full-capture replay check.[/yellow]")
+    else:
+        events = [draft_ws.parse_frame(msg) for msg in draft_ws.iter_frames(WS_FIXTURE_PATH)]
+        errors = [e for e in events if isinstance(e, draft_ws.WsError)]
+        assert not errors, f"every frame in a real capture must parse: {errors}"
+
+        sales = [e for e in events if isinstance(e, draft_ws.Sold)]
+        assert len(sales) == 1 and sales[0].price == 43, \
+            "the one completed sale in the fixture must match ESPN's on-screen price"
+
+        console.print(f"[green]{len(events)} frames parsed clean against the real capture, "
+                      f"{len(sales)} sale(s) matched against the recap.[/green]")
+
+    if not WS_HAR_FIXTURE_PATH.exists():
+        console.print("[yellow]data/ws-from-har.jsonl not present locally "
+                       "(gitignored, run scripts/draft_ws.py --from-har to produce it) -- "
+                       "skipping the HAR-derived decode check.[/yellow]\n")
         return
 
-    events = [draft_ws.parse_frame(msg) for msg in draft_ws.iter_frames(WS_FIXTURE_PATH)]
-    errors = [e for e in events if isinstance(e, draft_ws.WsError)]
-    assert not errors, f"every frame in a real capture must parse: {errors}"
+    # Unlike the fixture above, this one has no independent recap to check
+    # prices against -- it's a mock draft, not cross-referenced against
+    # ESPN's UI. The check here is that the decoder covers 100% of a real,
+    # much larger, bidirectional capture: every send and receive frame kind
+    # produced across a full mock draft, not just the kinds one earlier
+    # session happened to exercise.
+    all_events = [draft_ws.parse_frame(msg)
+                  for msg in draft_ws.iter_frames(WS_HAR_FIXTURE_PATH, include_sent=True)]
+    all_errors = [e for e in all_events if isinstance(e, draft_ws.WsError)]
+    assert not all_errors, f"every frame in the HAR capture must parse: {all_errors}"
 
-    sales = [e for e in events if isinstance(e, draft_ws.Sold)]
-    assert len(sales) == 1 and sales[0].price == 43, \
-        "the one completed sale in the fixture must match ESPN's on-screen price"
+    har_sales = [e for e in all_events if isinstance(e, draft_ws.Sold)]
+    assert len(har_sales) > 1, "expected multiple completed sales in a full mock draft"
 
-    console.print(f"[green]{len(events)} frames parsed clean against the real capture, "
-                  f"{len(sales)} sale(s) matched against the recap.[/green]\n")
+    console.print(f"[green]{len(all_events)} frames (both directions) parsed clean against "
+                  f"the HAR capture, {len(har_sales)} sale(s) seen.[/green]\n")
 
 
 def main() -> int:
