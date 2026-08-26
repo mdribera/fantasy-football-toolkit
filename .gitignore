@@ -1,0 +1,20 @@
+# Credentials - never commit
+.env
+.env.local
+
+# Cached data pulls
+data/cache/
+data/*.json
+data/*.csv
+!data/.gitkeep
+
+# Draft state
+data/draft-*.json
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
