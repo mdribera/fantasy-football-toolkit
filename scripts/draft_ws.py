@@ -24,6 +24,12 @@ shape --replay understands:
 
     scripts/draft_ws.py --from-har data/ws-capture.har --out data/ws-from-har.jsonl
 
+By default `--record` sends nothing at all. `--ping` is the one exception:
+it sends the browser's confirmed `PING PING%20<epochMs>` keepalive every
+~15s (format and cadence from a HAR capture) and nothing else, so a
+connection can survive past ESPN's ~65s silence timeout for tests that need
+a long-lived, still-otherwise-silent connection.
+
 Token: the host tolerates only one live connection per token -- reusing an
 active session's token disconnects the other holder ("Duplicate Connection"),
 and per Mark this is per-account, not per-token (a second browser hits the
@@ -41,6 +47,7 @@ import argparse
 import json
 import re
 import sys
+import threading
 import time
 import urllib.parse
 from pathlib import Path
@@ -54,6 +61,7 @@ import websocket
 from ff import config, draft_state, draft_sync, draft_ws
 
 console = Console()
+PING_INTERVAL_S = 15  # confirmed cadence from a HAR capture, see docs/draft-ws-plan.md
 VALUES_PATH = Path(__file__).resolve().parents[1] / "data" / "values.json"
 SCRATCH_STATE_PATH = Path(__file__).resolve().parents[1] / "data" / "cache" / "draft-ws-state-replay.json"
 DEFAULT_JOIN_URL_FILE = Path(__file__).resolve().parents[1] / "data" / "join-url.txt"
@@ -96,33 +104,50 @@ def parse_join_url(url: str) -> tuple[str, str]:
     return league_id, team_id
 
 
-def cmd_record(out_path: Path, join_url: str, cred: config.EspnCredentials, duration: int | None) -> int:
+def cmd_record(out_path: Path, join_url: str, cred: config.EspnCredentials, duration: int | None,
+                send_ping: bool) -> int:
     if not cred.has_private_auth:
         console.print("[red]ESPN_SWID / ESPN_S2 required.[/red]")
         return 1
 
     league_id, team_id = parse_join_url(join_url)
     console.print(f"Connecting to league {league_id} as team {team_id} (from pasted join URL).")
-    console.print(f"Logging every frame to {out_path}. Ctrl-C to stop.")
+    ping_note = f", sending PING every {PING_INTERVAL_S}s" if send_ping else ", sending nothing"
+    console.print(f"Logging every frame to {out_path}{ping_note}. Ctrl-C to stop.")
 
     fh = out_path.open("a")
     start = time.monotonic()
+    stop_ping = threading.Event()
 
-    def _log(msg: str) -> None:
-        fh.write(json.dumps({"ts": time.time(), "msg": redact_token(msg)}) + "\n")
+    def _log(direction: str, msg: str) -> None:
+        fh.write(json.dumps({"ts": time.time(), "dir": direction, "msg": redact_token(msg)}) + "\n")
         fh.flush()
 
     def on_message(ws, message):
-        _log(message)
+        _log("receive", message)
         console.print(f"[dim]{time.strftime('%H:%M:%S')}[/dim] recv {message[:120]}")
+
+    def _ping_loop(ws):
+        while not stop_ping.wait(PING_INTERVAL_S):
+            frame = f"PING PING%20{int(time.time() * 1000)}"
+            try:
+                ws.send(frame)
+            except Exception as exc:
+                console.print(f"[red]ping send failed:[/red] {exc}")
+                return
+            _log("send", frame)
+            console.print(f"[dim]{time.strftime('%H:%M:%S')}[/dim] sent {frame}")
 
     def on_open(ws):
         console.print("[green]Connected.[/green]")
+        if send_ping:
+            threading.Thread(target=_ping_loop, args=(ws,), daemon=True).start()
 
     def on_error(ws, error):
         console.print(f"[red]error:[/red] {error}")
 
     def on_close(ws, code, msg):
+        stop_ping.set()
         console.print(f"[yellow]closed:[/yellow] {code} {msg}")
 
     ws = websocket.WebSocketApp(
@@ -142,13 +167,13 @@ def cmd_record(out_path: Path, join_url: str, cred: config.EspnCredentials, dura
 
     try:
         if duration:
-            import threading
             timer = threading.Timer(duration, ws.close)
             timer.start()
         ws.run_forever()
     except KeyboardInterrupt:
         console.print("Stopped.")
     finally:
+        stop_ping.set()
         fh.close()
     console.print(f"Ran {time.monotonic() - start:.0f}s. Frames saved to {out_path}.")
     return 0
@@ -238,6 +263,9 @@ def main() -> int:
                         help=f"file holding the pasted JOIN URL (default: {DEFAULT_JOIN_URL_FILE})")
     parser.add_argument("--duration", type=int, default=None,
                         help="stop after N seconds for --record (default: run until Ctrl-C)")
+    parser.add_argument("--ping", action="store_true",
+                        help="send the browser's PING keepalive every ~15s for --record "
+                             "(default: send nothing at all)")
     args = parser.parse_args()
 
     if args.replay:
@@ -250,7 +278,7 @@ def main() -> int:
 
     cred = config.EspnCredentials()
     join_url = load_join_url(args.join_url_file)
-    return cmd_record(Path(args.record), join_url, cred, args.duration)
+    return cmd_record(Path(args.record), join_url, cred, args.duration, args.ping)
 
 
 if __name__ == "__main__":
