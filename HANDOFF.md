@@ -117,37 +117,29 @@ knows where it stopped. Items are ordered by priority within each deadline.
       likely enforces one live connection per token, so *any* second
       connection with the same session (bot or a second human tab) forces
       the first one off, independent of anything `draft_sync.py` does.
-  - [ ] Next: capture the *connection setup* for this host, not just the
-        recurring PING -- open the Network tab's WS filter (not just
-        Fetch/XHR) right when a practice draft's room first loads, and look
-        for a `wss://fantasydraft.espn.com/...` upgrade request. That
-        initial handshake URL plus the message format for a pick event
-        (distinct from the `PING` keepalive) is what a new `draft_sync`
-        source would need to open its own read-only connection. Do this
-        from a tab Mark is not actively drafting in, given the one-
-        connection-per-token behavior above.
-  - [ ] Once the pick-event message shape is known, decide whether it's
-        worth a `websocket-client` (or similar) dependency to consume it
-        directly in `src/ff/draft_sync.py`, versus keeping `mDraftDetail`
-        for post-draft reconciliation only and relying on manual entry live.
   - [ ] A direct GET against `fantasy.espn.com/apis/v3/games/ffl/...`
         (rather than `lm-api-reads.fantasy.espn.com`) with the same cookies
         403'd -- likely irrelevant now that the real live host
         (`fantasydraft.espn.com`) is known, but note it here so nobody
         retries it expecting a different result without new headers.
-  - [ ] Once a working live endpoint (or confirmation that none exists) is
-        found, update `src/ff/draft_sync.py` accordingly. If nothing live
-        exists, promote manual entry (already working, `--no-sync` in
-        `scripts/auction.py`) from fallback to the documented primary path,
-        and demote auto-sync to "reconciliation after the draft ends."
   - [x] Install the `claude-in-chrome` extension and grant it
         `fantasy.espn.com` permission -- done, connected 2026-08-26.
-  - [x] The items below this point are superseded by
-        `docs/draft-ws-plan.md`, which now carries the live plan and status
-        for the websocket client (parser built and unit-tested, HAR capture
-        decoded end to end, token-from-file capture flow in place -- see
-        that doc's checklists for what's still open before the Aug 31
-        go/no-go).
+  - [x] The websocket protocol is reverse-engineered end to end.
+        `src/ff/draft_ws.py` parses every frame kind ESPN's draft room
+        sends and receives -- bids, sales, nominations, the prenomination
+        queue, clock states, autodraft, the ping/pong keepalive -- verified
+        against two real captures: a live three-way bidding war and a full
+        bidirectional HAR export from a mock draft (1160 frames, zero
+        unparsed in either direction). `scripts/draft_ws.py` covers capture
+        (`--record`, connecting with a JOIN URL Mark pastes by hand into
+        `data/join-url.txt`), replay (`--replay`, landing a fixture on a
+        scratch `DraftState`), and HAR extraction (`--from-har`).
+        `scripts/auction.py` will grow a `--ws` mode using this as the live
+        event source in place of `mDraftDetail`. Still open: whether the
+        join token survives its browser tab closing, mid-draft reconnect,
+        nomination-timeout behavior, and two unconfirmed `SOLD` fields --
+        full protocol reference and the remaining rehearsal plan live in
+        `docs/draft-ws-plan.md`.
 
 - [ ] **3. Fix the console's inflation adjustment.** Two problems, both in the
       number the console consults most. `DraftState.inflation()` is
