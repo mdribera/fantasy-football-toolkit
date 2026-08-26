@@ -8,14 +8,23 @@ Commands (type at the > prompt):
   need                      best remaining at positions I still must fill
   teams                     every team's budget and roster count
   market                    inflation: is the room paying over or under sheet
+  sync                      force an immediate pull from the ESPN draft feed
   undo                      remove the last recorded purchase
   quit
+
+By default this polls ESPN's own draft-detail feed in the background and
+auto-records completed picks as they close -- see 'sync' to force a pull, and
+--no-sync to disable it and enter everything by hand. If the feed goes quiet,
+a banner says so; manual entry keeps working regardless.
 
 State persists to data/draft-state.json, so a crashed terminal loses nothing.
 """
 
+import argparse
 import json
 import sys
+import threading
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -23,10 +32,84 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from rich.console import Console
 from rich.table import Table
 
-from ff import config, draft_state, values
+from ff import config, draft_state, draft_sync, values
 
 console = Console()
 VALUES_PATH = Path(__file__).resolve().parents[1] / "data" / "values.json"
+FEED_DOWN_THRESHOLD = 3  # consecutive failed polls before we warn out loud
+
+
+class _ReplayDone(Exception):
+    """Internal: the replay fixture has no more snapshots."""
+
+
+def _replay_source(path: Path):
+    """A PickSource that steps through a recorded fixture instead of ESPN.
+
+    Lets --replay drive the exact same background-poller code path as a live
+    draft, which is the point: this is what a rehearsal actually rehearses.
+    """
+    snapshots = iter(list(draft_sync.replay_snapshots(path)))
+
+    def _next() -> dict:
+        try:
+            return next(snapshots)
+        except StopIteration:
+            raise _ReplayDone() from None
+
+    return _next
+
+
+class SyncController:
+    """Background poller feeding completed picks to the main REPL loop.
+
+    The thread only ever reads from ESPN and pushes onto a queue -- it never
+    touches DraftState. The main loop is the sole writer, so there's no race
+    with manual entry or 'undo'.
+    """
+
+    def __init__(self, source, resolver: draft_sync.PlayerResolver, interval: int):
+        self.feed = draft_sync.DraftFeed(source, resolver)
+        self.interval = interval
+        self.consecutive_failures = 0
+        self.last_error: str | None = None
+        self._queue: list = []
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._wake = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def wake(self) -> None:
+        """Ask the poller to run now instead of waiting out the interval."""
+        self._wake.set()
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            try:
+                picks = self.feed.poll()
+                self.consecutive_failures = 0
+                self.last_error = None
+                if picks:
+                    with self._lock:
+                        self._queue.extend(picks)
+            except _ReplayDone:
+                return
+            except draft_sync.DraftFeedError as exc:
+                self.consecutive_failures += 1
+                self.last_error = str(exc)
+            self._wake.wait(self.interval)
+            self._wake.clear()
+
+    def drain(self) -> list:
+        with self._lock:
+            picks, self._queue = self._queue, []
+        return picks
+
+    def is_down(self) -> bool:
+        return self.consecutive_failures >= FEED_DOWN_THRESHOLD
 
 
 def load_values() -> list[values.Valuation]:
@@ -104,16 +187,71 @@ def show_teams(state: draft_state.DraftState) -> None:
     console.print(table)
 
 
+def _drain_sync(sync: SyncController, state: draft_state.DraftState,
+                 vals: list[values.Valuation]) -> None:
+    """Pull whatever the poller has queued and record it, before every prompt.
+
+    A pick already present under the same player name -- typed in by hand
+    before the feed caught up -- is skipped rather than recorded twice.
+    """
+    picks = sync.drain()
+    if not picks:
+        if sync.is_down():
+            console.print(f"[bold red]FEED DOWN[/bold red] ({sync.last_error}) -- "
+                          "[bold red]ENTER PICKS MANUALLY[/bold red]")
+        return
+
+    existing = {p.player.lower() for p in state.purchases}
+    lookup = {v.name.lower(): v for v in vals}
+    for pick in picks:
+        if pick.player.lower() in existing:
+            continue
+        if not state.record_pick(pick.player, pick.position, pick.price,
+                                  pick.team, pick.espn_pick_id):
+            continue
+        existing.add(pick.player.lower())
+        match = lookup.get(pick.player.lower())
+        note = f" (sheet ${match.value}, {match.value - pick.price:+d})" if match else ""
+        console.print(f"[dim][auto][/dim] {pick.player} ${pick.price} -> {pick.team}{note}")
+
+
 def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--no-sync", action="store_true",
+                        help="disable automatic pick import; manual entry only")
+    parser.add_argument("--replay", metavar="PATH",
+                        help="drive the sync feed from a recorded JSONL fixture "
+                             "instead of live ESPN (for rehearsal)")
+    parser.add_argument("--interval", type=int, default=3,
+                        help="seconds between background polls (default 3)")
+    parser.add_argument("--my-team", help="team label to use for 'me'/'need'")
+    args = parser.parse_args()
+
     vals = load_values()
     state = draft_state.DraftState.load()
+    if args.my_team:
+        state.my_team = draft_state.normalize_team(args.my_team)
     lookup = {v.name.lower(): v for v in vals}
 
+    sync: SyncController | None = None
+    if not args.no_sync:
+        resolver = draft_sync.PlayerResolver(VALUES_PATH)
+        if args.replay:
+            source = _replay_source(Path(args.replay))
+        else:
+            cred = config.EspnCredentials()
+            source = lambda: draft_sync.fetch_picks(cred)  # noqa: E731
+        sync = SyncController(source, resolver, args.interval)
+        sync.start()
+
+    sync_note = "auto-sync every %ds" % args.interval if sync else "sync disabled, manual only"
     console.print(f"[bold]Auction console[/bold] -- {config.LEAGUE_NAME}, "
-                  f"${config.SALARY_CAP} cap, {config.ROSTER_SIZE} spots. "
+                  f"${config.SALARY_CAP} cap, {config.ROSTER_SIZE} spots, {sync_note}. "
                   f"{len(state.purchases)} purchases loaded. Type 'quit' to exit.\n")
 
     while True:
+        if sync:
+            _drain_sync(sync, state, vals)
         try:
             line = console.input("[bold cyan]>[/bold cyan] ").strip()
         except (EOFError, KeyboardInterrupt):
@@ -130,6 +268,13 @@ def main() -> int:
             show_me(state, vals)
         elif head == "teams":
             show_teams(state)
+        elif head == "sync":
+            if sync:
+                sync.wake()
+                time.sleep(0.5)
+                _drain_sync(sync, state, vals)
+            else:
+                console.print("[yellow]Sync disabled (--no-sync).[/yellow]")
         elif head == "market":
             table = Table(title=f"Market vs sheet -- overall x{state.inflation(vals):.2f}")
             table.add_column("Pos")

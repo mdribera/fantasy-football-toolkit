@@ -9,7 +9,8 @@ terminal mid-draft.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field, asdict
+import os
+from dataclasses import dataclass, field, asdict, fields
 from pathlib import Path
 
 from . import config
@@ -33,12 +34,23 @@ class Purchase:
     position: str
     price: int
     team: str
+    espn_pick_id: int | None = None  # ESPN's stable per-slot id, for idempotent import
 
 
 @dataclass
 class DraftState:
     purchases: list[Purchase] = field(default_factory=list)
     my_team: str = "ME"
+    # Pick ids removed by 'undo' this session, so a still-running poller doesn't
+    # immediately re-import something just taken back out. Not persisted --
+    # ESPN's own state moved on, so this only needs to survive one session.
+    _suppressed_pick_ids: set = field(default_factory=set, repr=False, compare=False)
+    # Where save()/record()/record_pick()/undo() write by default. A plain
+    # dataclass default of STATE_PATH would mean every DraftState -- including
+    # a scratch one built for a --replay rehearsal -- writes over the real
+    # live-draft file the moment anything is recorded. Keeping it per-instance
+    # lets tooling opt into an isolated path.
+    state_path: Path = field(default=STATE_PATH, repr=False, compare=False)
 
     # --- budgets ---------------------------------------------------------
     def spent_by(self, team: str) -> int:
@@ -58,7 +70,8 @@ class DraftState:
         return config.max_bid(self.budget_left(team), self.spots_left(team))
 
     def all_teams(self) -> list[str]:
-        seen = {p.team for p in self.purchases}
+        seen = set(config.TEAMS.values())
+        seen.update(p.team for p in self.purchases)
         seen.add(self.my_team)
         return sorted(seen)
 
@@ -133,28 +146,51 @@ class DraftState:
         self.purchases.append(Purchase(player, position, price, normalize_team(team)))
         self.save()
 
+    def record_pick(
+        self, player: str, position: str, price: int, team: str, espn_pick_id: int
+    ) -> bool:
+        """Record a pick from the automated feed, keyed by ESPN's pick id.
+
+        Returns False without recording if this pick was already imported, or
+        was just removed with 'undo' -- both cases where re-adding it would be
+        wrong rather than merely redundant.
+        """
+        if espn_pick_id in self._suppressed_pick_ids:
+            return False
+        if any(p.espn_pick_id == espn_pick_id for p in self.purchases):
+            return False
+        self.purchases.append(
+            Purchase(player, position, price, normalize_team(team), espn_pick_id)
+        )
+        self.save()
+        return True
+
     def undo(self) -> Purchase | None:
         if not self.purchases:
             return None
         last = self.purchases.pop()
+        if last.espn_pick_id is not None:
+            self._suppressed_pick_ids.add(last.espn_pick_id)
         self.save()
         return last
 
-    def save(self, path: Path = STATE_PATH) -> None:
+    def save(self, path: Path | None = None) -> None:
+        path = path or self.state_path
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps(
-                {"my_team": self.my_team, "purchases": [asdict(p) for p in self.purchases]},
-                indent=2,
-            )
+        payload = json.dumps(
+            {"my_team": self.my_team, "purchases": [asdict(p) for p in self.purchases]},
+            indent=2,
         )
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(payload)
+        os.replace(tmp, path)
 
     @classmethod
     def load(cls, path: Path = STATE_PATH) -> "DraftState":
         if not path.exists():
-            return cls()
+            return cls(state_path=path)
         raw = json.loads(path.read_text())
-        return cls(
-            my_team=raw.get("my_team", "ME"),
-            purchases=[Purchase(**p) for p in raw.get("purchases", [])],
-        )
+        known = {f.name for f in fields(Purchase)}
+        purchases = [Purchase(**{k: v for k, v in p.items() if k in known})
+                     for p in raw.get("purchases", [])]
+        return cls(my_team=raw.get("my_team", "ME"), purchases=purchases, state_path=path)

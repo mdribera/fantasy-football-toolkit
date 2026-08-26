@@ -117,6 +117,24 @@ DIVISIONS = {
     ],
 }
 
+# ESPN team id -> console label. IDs come from the league's mTeam view and skip
+# 9 (the ten teams are 1-8, 10, 11). Labels are hand-picked because ESPN's own
+# abbreviations include emoji for three teams and aren't usable as text labels.
+MY_TEAM_ID = 6
+
+TEAMS = {
+    1: "DRAKE",   # Love The Drake
+    2: "AUBREY",  # Aubrey's Revenge
+    3: "LEWE",    # Nabers think im selling dope
+    4: "CCT",     # Team 4
+    5: "FWD",     # Team 5
+    6: "ME",      # The QB's Knees
+    7: "HH",      # Team 7
+    8: "RRT",     # Rhodric's Rowdy Team
+    10: "PITTS",  # Team 10
+    11: "SLAY",   # Team 11
+}
+
 
 @dataclass
 class EspnCredentials:

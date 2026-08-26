@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from rich.console import Console
 from rich.table import Table
 
-from ff import config, scoring, values
+from ff import config, draft_state, draft_sync, scoring, values
 
 console = Console()
 
@@ -63,7 +63,75 @@ def top_n(vals, position, n=5):
     return [v for v in vals if v.position == position][:n]
 
 
+def _fake_snapshot(picks: list[dict]) -> dict:
+    return {"drafted": False, "inProgress": True, "picks": picks}
+
+
+def _pick(pick_id, team_id, player_id, bid) -> dict:
+    return {"id": pick_id, "overallPickNumber": pick_id, "roundId": 1,
+            "roundPickNumber": pick_id, "nominatingTeamId": team_id,
+            "teamId": team_id, "playerId": player_id, "bidAmount": bid}
+
+
+def test_draft_sync() -> None:
+    """Exercise the draft-day sync pipeline with no network and no credentials.
+
+    This is the regression test for scripts/draft_sync.py --replay: dedup by
+    ESPN's pick id, unresolved players falling back to a placeholder instead
+    of crashing, and DraftState.record_pick's idempotency.
+    """
+    console.print("[bold]Draft sync[/bold]")
+
+    unfilled = _pick(1, -1, -1, 0)
+    filled_known = _pick(2, config.MY_TEAM_ID, 4429795, 46)   # Jahmyr Gibbs, from values.json
+    filled_unknown = _pick(3, 7, 999999999, 3)                # not on any board
+
+    picks = draft_sync.completed([unfilled, filled_known, filled_unknown])
+    assert [p["id"] for p in picks] == [2, 3], "unfilled slots must be excluded"
+
+    no_creds = config.EspnCredentials(league_id="", swid="", espn_s2="", team_id="")
+    resolver = draft_sync.PlayerResolver(
+        Path(__file__).resolve().parents[1] / "data" / "values.json", cred=no_creds
+    )
+    name, position = resolver.resolve(4429795)
+    assert name == "Jahmyr Gibbs" and position == "RB", "known player should resolve off the board"
+
+    # Forcing empty credentials means the live fallback lookup can't reach
+    # ESPN even if this machine's .env is configured -- it should degrade to
+    # a placeholder, not raise, exactly as it would for an actual outage.
+    name, position = resolver.resolve(999999999)
+    assert name == "ESPN#999999999" and position == "?", "unknown player must degrade, not crash"
+
+    feed = draft_sync.DraftFeed(source=lambda: {}, resolver=resolver)
+    first = feed.poll_snapshot(_fake_snapshot([unfilled, filled_known]))
+    assert [p.espn_pick_id for p in first] == [2]
+    second = feed.poll_snapshot(_fake_snapshot([unfilled, filled_known, filled_unknown]))
+    assert [p.espn_pick_id for p in second] == [3], "already-seen pick ids must not resurface"
+
+    # An explicit scratch path -- this test must never touch the real
+    # data/draft-state.json, since DraftState.save() writes on every record.
+    scratch_path = Path(__file__).resolve().parents[1] / "data" / "cache" / "draft-state-selftest.json"
+    state = draft_state.DraftState(state_path=scratch_path)
+    assert state.all_teams() == sorted(config.TEAMS.values()), \
+        "all_teams should be seeded from config.TEAMS, not just recorded purchases"
+
+    recorded = state.record_pick("Jahmyr Gibbs", "RB", 46, "ME", espn_pick_id=2)
+    duplicate = state.record_pick("Jahmyr Gibbs", "RB", 46, "ME", espn_pick_id=2)
+    assert recorded and not duplicate, "re-polling the same pick id must not double-record"
+    assert state.spent_by("ME") == 46
+
+    state.undo()
+    resurfaced = state.record_pick("Jahmyr Gibbs", "RB", 46, "ME", espn_pick_id=2)
+    assert not resurfaced, "a pick just undone should stay suppressed for this session"
+
+    scratch_path.unlink(missing_ok=True)
+    console.print("[green]Sync pipeline: dedup, placeholder fallback and "
+                  "undo-suppression all hold.[/green]\n")
+
+
 def main() -> int:
+    test_draft_sync()
+
     console.print("[bold]Scoring engine[/bold]")
     qb = scoring.score_offense(
         {"passing_yards": 4500, "passing_tds": 35, "interceptions": 10,

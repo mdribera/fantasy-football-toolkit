@@ -38,6 +38,7 @@ class Valuation:
     vorp: float
     value: int
     tier: int = 0
+    espn_id: int | None = None
 
     @property
     def value_str(self) -> str:
@@ -82,6 +83,12 @@ def _team(player) -> str:
     return getattr(player, "pro_team", "")
 
 
+def _espn_id(player) -> int | None:
+    if isinstance(player, dict):
+        return player.get("espn_id")
+    return getattr(player, "espn_id", None)
+
+
 def replacement_points(players: Sequence, position: str) -> float:
     """Projected points of the player at this position's replacement rank."""
     pool = _positional_pool(players, position)
@@ -118,6 +125,7 @@ def compute_values(
                 replacement_points=baselines[pos],
                 vorp=vorp,
                 value=config.MIN_BID,
+                espn_id=_espn_id(player),
             )
         )
 

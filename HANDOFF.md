@@ -56,51 +56,106 @@ committing.
 
 These checkboxes are the progress record across sessions. Tick items as they
 land, and leave a dated note under anything partially done so the next session
-knows where it stopped. Items are ordered by deadline, not by size.
+knows where it stopped. Items are ordered by priority within each deadline.
 
 ### Before the draft (Sep 2, 2026)
 
-- [ ] **1. Browser automation for draft day.** The top gap. Mark chose
-      "browser automation reads the draft room, terminal alongside as backup."
-      The terminal side is done and tested; the automation side does not exist.
-      Mid-auction is the worst possible time to debug a selector, so treat the
-      rehearsal step as mandatory rather than optional.
-  - [ ] Read the ESPN draft room through the `claude-in-chrome` skill
-  - [ ] Extract completed purchases (player, price, buying team)
-  - [ ] Feed them into `scripts/auction.py` state
-  - [ ] Build instant failover to manual entry
-  - [ ] Rehearse end to end against a mock draft
+- [x] **1. Automated pick ingestion for draft day.** ESPN's own
+      `view=mDraftDetail` endpoint returns the full 160-pick auction skeleton
+      as structured JSON (player, price, buying team, per pick) in ~0.15s --
+      no browser, no selectors, no DOM to break mid-auction.
+  - [x] `src/ff/draft_sync.py` polls the feed, resolves ESPN player ids off
+        `values.json`, and dedupes by ESPN's own stable pick id
+  - [x] `scripts/auction.py` runs the poller in a background thread and
+        auto-records completed picks before every prompt; `sync` forces an
+        immediate pull
+  - [x] Failover: `FEED DOWN -- ENTER PICKS MANUALLY` after 3 consecutive
+        failed polls; manual entry (`Josh Allen 52 RIVAL`) works unchanged the
+        whole time, including with `--no-sync`
+  - [x] Rehearsed with a synthetic 160-pick fixture
+        (`scripts/draft_sync.py --replay`): all picks import, re-running is a
+        no-op, every team lands on budget with 16 filled spots
 
-- [ ] **2. Validate the replacement levels.** `config.REPLACEMENT` drives every
-      price in the model, and `QB: 30` is the most consequential and least
-      certain assumption. It presumes all 10 teams roster three QBs; if they
-      carry two, replacement moves to ~QB22 and every QB price falls.
+- [ ] **2. Live rehearsal against a real ESPN mock auction.** The riskiest
+      open assumption in the project: the whole draft-day plan depends on
+      `mDraftDetail` updating in real time during a live auction rather than
+      lazily at the end, and only a synthetic fixture has tested it. If the
+      feed turns out to be lazy, draft day is manual entry plus the browser,
+      and that is worth knowing a week early, not at 12:05 PM on Sep 2.
+  - [ ] Run `scripts/draft_sync.py --record` against an ESPN mock auction,
+        then replay the recording through the console
+  - [ ] Install the `claude-in-chrome` extension and grant it
+        `fantasy.espn.com` permission, so the browser backup (watching the
+        live nomination, cross-checking budgets) is available on draft day
+
+- [ ] **3. Fix the console's inflation adjustment.** Two problems, both in the
+      number the console consults most. `DraftState.inflation()` is
+      backward-looking (dollars paid over sheet value of players already
+      sold), so when the room overpays early it marks the remaining players
+      *up* at exactly the moment depleted budgets mean they will clear *under*
+      sheet -- the live-auction skill's own "worth $15, clears at $1-2" window.
+      And `best` applies the single global rate to every position, while the
+      model's core claim is that positions diverge. Replace with
+      forward-looking inflation -- dollars remaining in the room divided by
+      sheet value of the remaining draftable pool -- computed per position,
+      and drive the Adjusted column off that.
+
+- [ ] **4. Validate the replacement levels.** `config.REPLACEMENT` drives
+      every price in the model, and `QB: 30` is the most consequential and
+      least certain assumption. It presumes all 10 teams roster three QBs; if
+      they carry two, replacement moves to ~QB22, and because the QB board
+      falls off a cliff around QB26, the baseline swing is large.
   - [ ] Build a sensitivity table across QB 22 / 26 / 30
-  - [ ] Commit to a final value and record the reasoning in `docs/league-analysis.md`
+  - [ ] Commit to a final value and record the reasoning in
+        `docs/league-analysis.md`
+  - Scope note: the choice moves the cross-position budget split and the
+    Allen walk-away price. It does not move the two-from-the-band
+    recommendation, which is a points comparison and replacement-invariant.
+    The per-position `market` readout also self-corrects live: a room pricing
+    QBs like replacement is QB22 shows up as QB inflation under 1.0.
 
-- [ ] **3. Cross-check projections.** ESPN's numbers are the only input right
-      now. Compare the top ~50 against FantasyPros superflex and DraftSharks
-      (links in `docs/data-sources.md`), noting that both are 12-team superflex
-      rather than 10-team strict 2QB. Investigate large disagreements.
+- [ ] **5. Draft-day guardrails in the console.**
+  - [ ] Bye weeks: add a `bye` field to `values.json` and a column to
+        `best`/`need`, and flag a QB pairing that shares a bye. Matters most
+        at QB, where the third quarterback exists largely to cover byes.
+  - [ ] Surface the three-QB rule: `needs()` counts starting slots only, so
+        the console reports "all starting slots filled" at two QBs. The most
+        important roster rule in the league should be on screen in `me`, not
+        only in the skill text.
 
-- [ ] **4. Bye-week planning.** Not built. Matters most at QB, where the third
-      quarterback exists largely to cover byes. Check that a QB pairing does
-      not share one.
+- [ ] **6. Prepare a nomination list.** The strategy doc calls early QB
+      nominations the highest-leverage tactic in a 2QB auction, but nothing
+      produces the actual list. Write down 10-15 names to nominate: QBs
+      outside the target band, plus expensive players not being targeted.
 
-- [ ] **5. Verify D/ST and K projections.** ESPN projects these, but it is
-      unconfirmed whether its D/ST projection models this league's unusual
-      yards-allowed table (down to -7 for 550+ yards). `scoring.py` implements
-      it; nothing has validated ESPN against it. Low stakes at $1 per unit, but
-      relevant to streaming.
+- [ ] **7. Cross-check the QB projection band.** The strategy's central claim
+      -- QB2 through QB15 span 2.4 points per week -- rests on ESPN's
+      projections alone. Compare the top ~30 QBs against FantasyPros superflex
+      and DraftSharks (links in `docs/data-sources.md`), noting both are
+      12-team superflex rather than 10-team strict 2QB. If consensus shows a
+      wider spread, the skip-Allen conclusion weakens and the walk-away price
+      moves. Skill-player spot checks are secondary.
 
 ### Once the season starts
 
-- [ ] **6. Exercise the in-season paths.** `box_scores()`, waiver flows, and
+- [ ] **8. Exercise the in-season paths.** `box_scores()`, waiver flows, and
       the start-sit and waiver-faab skills have not run against real data
       because the season has not started. Expect rough edges in Week 1.
   - [ ] `box_scores()` against a live matchup
   - [ ] Waiver and FAAB flow end to end
   - [ ] `start-sit` skill against a real lineup decision
+
+- [ ] **9. Rival FAAB tracking.** The waiver-faab skill sizes bids against our
+      own $100, but the right bid depends on what rivals still hold, and ESPN
+      exposes each team's remaining budget. Surface it alongside the free
+      agent scan.
+
+- [ ] **10. Verify D/ST and K projections.** ESPN projects these, but it is
+      unconfirmed whether its D/ST projection models this league's unusual
+      yards-allowed table (down to -7 for 550+ yards). `scoring.py` implements
+      it; nothing has validated ESPN against it. Low stakes at $1 per unit on
+      draft day, so this waits until the first streaming decision makes it
+      relevant.
 
 ## Gotchas
 
