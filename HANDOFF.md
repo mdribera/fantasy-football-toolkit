@@ -142,6 +142,12 @@ knows where it stopped. Items are ordered by priority within each deadline.
         and demote auto-sync to "reconciliation after the draft ends."
   - [x] Install the `claude-in-chrome` extension and grant it
         `fantasy.espn.com` permission -- done, connected 2026-08-26.
+  - [x] The items below this point are superseded by
+        `docs/draft-ws-plan.md`, which now carries the live plan and status
+        for the websocket client (parser built and unit-tested, HAR capture
+        decoded end to end, token-from-file capture flow in place -- see
+        that doc's checklists for what's still open before the Aug 31
+        go/no-go).
 
 - [ ] **3. Fix the console's inflation adjustment.** Two problems, both in the
       number the console consults most. `DraftState.inflation()` is
