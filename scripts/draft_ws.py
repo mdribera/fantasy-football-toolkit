@@ -129,7 +129,10 @@ def cmd_record(out_path: Path, join_url: str, cred: config.EspnCredentials, dura
 
     def _ping_loop(ws):
         while not stop_ping.wait(PING_INTERVAL_S):
-            frame = f"PING PING%20{int(time.time() * 1000)}"
+            # Every sent frame in the HAR capture is newline-terminated, PING
+            # included -- omitting it means the server never sends a PONG back
+            # (confirmed live: 0 PONGs across two tests that omitted it).
+            frame = f"PING PING%20{int(time.time() * 1000)}\n"
             try:
                 ws.send(frame)
             except Exception as exc:
