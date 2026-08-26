@@ -158,6 +158,7 @@ def test_draft_ws() -> None:
         draft_ws.Token(1, 1721228630, 6, "{REDACTED-SWID}", "REDACTED-SESSION")
     assert draft_ws.parse_frame("INIT abc123\n") == draft_ws.Init("abc123")
     assert draft_ws.parse_frame("JOINED 6 {REDACTED}\n") == draft_ws.Joined(6, "{REDACTED}")
+    assert draft_ws.parse_frame("LEFT 6 {REDACTED} 1\n") == draft_ws.Left(6, "{REDACTED}", 1)
     assert draft_ws.parse_frame("PONG PING%201787783293012\n") == draft_ws.Pong("PING%201787783293012")
     assert draft_ws.parse_frame("BID_ACK 6 4426348 56\n") == draft_ws.BidAck(6, 4426348, 56)
     assert draft_ws.parse_frame("DRAFT_LIST 3918298 3916387\n") == draft_ws.DraftList((3918298, 3916387))

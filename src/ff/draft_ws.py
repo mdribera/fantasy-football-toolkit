@@ -54,6 +54,19 @@ class Joined:
 
 
 @dataclass(frozen=True)
+class Left:
+    """A team's connection leaving the room -- counterpart to Joined. Seen
+    once: our own connection, disconnected by the server ~1.5s before its
+    own nomination clock would have hit 0 while sitting connected but silent
+    (2026-08-26 live rehearsal). The trailing flag's meaning isn't confirmed
+    (only ever seen as 1). See docs/draft-ws-plan.md."""
+
+    team_id: int
+    swid: str
+    flag: int
+
+
+@dataclass(frozen=True)
 class Pong:
     """Echoes the payload of the Ping we just sent, for latency measurement."""
 
@@ -193,9 +206,9 @@ class WsError:
 
 
 Event = (
-    Autodraft | Init | Token | Joined | Pong | BidAck | DraftList | State | Clock | AutoSuggest
-    | Passed | Bid | Sold | Nomination | Ping | BidCommand | Nominate | Prenominate
-    | AutoNomination | WsError
+    Autodraft | Init | Token | Joined | Left | Pong | BidAck | DraftList | State | Clock
+    | AutoSuggest | Passed | Bid | Sold | Nomination | Ping | BidCommand | Nominate
+    | Prenominate | AutoNomination | WsError
 )
 
 
@@ -225,6 +238,9 @@ def parse_frame(raw: str) -> Event:
         if kind == "JOINED":
             team_id, swid = fields
             return Joined(int(team_id), swid)
+        if kind == "LEFT":
+            team_id, swid, flag = fields
+            return Left(int(team_id), swid, int(flag))
         if kind == "PONG":
             (payload,) = fields
             return Pong(payload)
