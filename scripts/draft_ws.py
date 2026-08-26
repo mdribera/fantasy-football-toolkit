@@ -17,6 +17,13 @@ fixture-rehearsal pattern `draft_sync.py --replay` already uses.
 
     scripts/draft_ws.py --replay data/ws-live-test.jsonl
 
+`--from-har` extracts and redacts the fantasydraft.espn.com websocket
+messages out of a Chrome DevTools HAR export (Network tab -> right-click ->
+"Save all as HAR with content"), in both directions, into the same fixture
+shape --replay understands:
+
+    scripts/draft_ws.py --from-har data/ws-capture.har --out data/ws-from-har.jsonl
+
 Token: the host tolerates only one live connection per token -- reusing an
 active session's token disconnects the other holder ("Duplicate Connection"),
 and per Mark this is per-account, not per-token (a second browser hits the
@@ -51,13 +58,17 @@ VALUES_PATH = Path(__file__).resolve().parents[1] / "data" / "values.json"
 SCRATCH_STATE_PATH = Path(__file__).resolve().parents[1] / "data" / "cache" / "draft-ws-state-replay.json"
 DEFAULT_JOIN_URL_FILE = Path(__file__).resolve().parents[1] / "data" / "join-url.txt"
 
-# TOKEN <gameId>:<leagueId>:<teamId>:<swid>:<sessionId> -- SWID and sessionId are
-# per-account auth material and must never land in a recording on disk.
-_TOKEN_RE = re.compile(r"^(TOKEN \d+:\d+:\d+:)\{[0-9A-Fa-f-]+\}:(\d+)")
+# SWID (a brace-wrapped GUID) and TOKEN's trailing sessionId are per-account
+# auth material and must never land in a recording on disk. SWID shows up
+# bare in more than just the TOKEN frame -- JOINED carries one too -- so this
+# redacts it wherever it appears, not just after a "TOKEN " prefix.
+_SWID_RE = re.compile(r"\{[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\}")
+_TOKEN_SESSION_RE = re.compile(r"^(TOKEN \d+:\d+:\d+:\{REDACTED-SWID\}:)\d+")
 
 
 def redact_token(msg: str) -> str:
-    return _TOKEN_RE.sub(lambda m: m.group(1) + "{REDACTED-SWID}:REDACTED-SESSION", msg)
+    msg = _SWID_RE.sub("{REDACTED-SWID}", msg)
+    return _TOKEN_SESSION_RE.sub(lambda m: m.group(1) + "REDACTED-SESSION", msg)
 
 
 def load_join_url(path: Path) -> str:
@@ -190,11 +201,39 @@ def cmd_replay(in_path: Path) -> int:
     return 0
 
 
+def cmd_from_har(har_path: Path, out_path: Path) -> int:
+    har = json.loads(har_path.read_text())
+    ws_entries = [e for e in har["log"]["entries"] if "_webSocketMessages" in e]
+    draft_entries = [e for e in ws_entries if "fantasydraft.espn.com" in e["request"]["url"]]
+    if not draft_entries:
+        console.print("[red]No fantasydraft.espn.com websocket connection found in this HAR.[/red]")
+        return 1
+    if len(draft_entries) > 1:
+        console.print(f"[yellow]{len(draft_entries)} fantasydraft.espn.com connections found "
+                       "in this HAR; using the first.[/yellow]")
+
+    frames = draft_entries[0]["_webSocketMessages"]
+    sent = sum(1 for f in frames if f.get("type") == "send")
+    with out_path.open("w") as fh:
+        for frame in frames:
+            direction = "send" if frame.get("type") == "send" else "receive"
+            fh.write(json.dumps({
+                "ts": frame["time"],
+                "dir": direction,
+                "msg": redact_token(frame["data"]),
+            }) + "\n")
+    console.print(f"Extracted {len(frames)} frames ({sent} sent, {len(frames) - sent} received) "
+                  f"to {out_path}.")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--record", metavar="PATH", help="append raw frames to a JSONL fixture")
     group.add_argument("--replay", metavar="PATH", help="replay a JSONL fixture through the parser")
+    group.add_argument("--from-har", metavar="PATH", help="extract a fixture from a DevTools HAR export")
+    parser.add_argument("--out", type=Path, help="output path for --from-har")
     parser.add_argument("--join-url-file", type=Path, default=DEFAULT_JOIN_URL_FILE,
                         help=f"file holding the pasted JOIN URL (default: {DEFAULT_JOIN_URL_FILE})")
     parser.add_argument("--duration", type=int, default=None,
@@ -203,6 +242,11 @@ def main() -> int:
 
     if args.replay:
         return cmd_replay(Path(args.replay))
+
+    if args.from_har:
+        if not args.out:
+            parser.error("--from-har requires --out")
+        return cmd_from_har(Path(args.from_har), args.out)
 
     cred = config.EspnCredentials()
     join_url = load_join_url(args.join_url_file)
