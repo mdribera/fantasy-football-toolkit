@@ -76,17 +76,72 @@ knows where it stopped. Items are ordered by priority within each deadline.
         (`scripts/draft_sync.py --replay`): all picks import, re-running is a
         no-op, every team lands on budget with 16 filled spots
 
-- [ ] **2. Live rehearsal against a real ESPN mock auction.** The riskiest
-      open assumption in the project: the whole draft-day plan depends on
-      `mDraftDetail` updating in real time during a live auction rather than
-      lazily at the end, and only a synthetic fixture has tested it. If the
-      feed turns out to be lazy, draft day is manual entry plus the browser,
-      and that is worth knowing a week early, not at 12:05 PM on Sep 2.
-  - [ ] Run `scripts/draft_sync.py --record` against an ESPN mock auction,
-        then replay the recording through the console
-  - [ ] Install the `claude-in-chrome` extension and grant it
-        `fantasy.espn.com` permission, so the browser backup (watching the
-        live nomination, cross-checking budgets) is available on draft day
+- [ ] **2. Live rehearsal against a real ESPN mock auction.** **2026-08-26:
+      the risk materialized.** Recorded `scripts/draft_sync.py --record`
+      against a real practice draft for this league (`leagueId=573680074`,
+      ESPN's "Practice Draft for SuperFun Football League" feature, not the
+      public mock lobby) while Mark drafted live in the browser. 132
+      snapshots over the course of 25+ real picks landing in the draft room
+      UI (with real players and prices) -- `mDraftDetail` reported **0**
+      completed picks (`playerId: -1` on every pick slot) in every single
+      snapshot. The recording is saved at `data/mock-recording.jsonl` for
+      further inspection (gitignored, still on disk).
+  - Ruled out: not a cookie/auth problem (`ESPN_S2` was re-copied fresh
+    mid-test, no change; calls were already returning 200 with valid JSON
+    throughout, just with empty pick data). Not a one-off caching blip --
+    zero variance across 132 polls spanning several minutes.
+  - Not yet ruled out: whether this is specific to *practice* drafts (maybe
+    ESPN backs practice drafts with a cheaper/batch-only write path,
+    distinct from a real league's live auction) vs. a general property of
+    `mDraftDetail` that would also apply on Sep 2. We have no way to test
+    the real thing before draft day, so this is the crux open question.
+  - [ ] Confirm whether `mDraftDetail` ever backfills once a practice draft
+        *completes* (replay `data/mock-recording.jsonl` isn't useful for
+        this since every snapshot is empty -- need one more poll right after
+        the practice draft Mark was running finishes, if it's still
+        accessible, or a fresh practice draft run to completion).
+  - [x] Found the endpoint the draft room's own frontend actually uses to
+        stay live: **`fantasydraft.espn.com`**, a completely separate host
+        from `lm-api-reads.fantasy.espn.com` that `draft_sync.py` polls
+        today. Mark captured this request from his own Network tab mid-draft
+        (2026-08-26):
+        `https://fantasydraft.espn.com/game-1/league-573680074/PING?1=PING%201787777561860&token=1:573680074:6:{SWID}:{sessionId}`
+      (token redacted here on purpose -- it's session credential material, not
+      something to have sitting in a tracked file. The shape is what matters.)
+    - Read as `PING?1=PING <epoch-ms>&token=<gameId>:<leagueId>:<teamId>:<memberId>:<sessionId>`.
+      Shape (repeating `PING`, a session token) strongly suggests a
+      WebSocket or long-poll connection, not a plain REST poll -- this is
+      almost certainly why `mDraftDetail` never updated: it's the wrong
+      host/protocol entirely, not a caching or auth issue.
+    - This also explains the "Duplicate Connection" incident: that host
+      likely enforces one live connection per token, so *any* second
+      connection with the same session (bot or a second human tab) forces
+      the first one off, independent of anything `draft_sync.py` does.
+  - [ ] Next: capture the *connection setup* for this host, not just the
+        recurring PING -- open the Network tab's WS filter (not just
+        Fetch/XHR) right when a practice draft's room first loads, and look
+        for a `wss://fantasydraft.espn.com/...` upgrade request. That
+        initial handshake URL plus the message format for a pick event
+        (distinct from the `PING` keepalive) is what a new `draft_sync`
+        source would need to open its own read-only connection. Do this
+        from a tab Mark is not actively drafting in, given the one-
+        connection-per-token behavior above.
+  - [ ] Once the pick-event message shape is known, decide whether it's
+        worth a `websocket-client` (or similar) dependency to consume it
+        directly in `src/ff/draft_sync.py`, versus keeping `mDraftDetail`
+        for post-draft reconciliation only and relying on manual entry live.
+  - [ ] A direct GET against `fantasy.espn.com/apis/v3/games/ffl/...`
+        (rather than `lm-api-reads.fantasy.espn.com`) with the same cookies
+        403'd -- likely irrelevant now that the real live host
+        (`fantasydraft.espn.com`) is known, but note it here so nobody
+        retries it expecting a different result without new headers.
+  - [ ] Once a working live endpoint (or confirmation that none exists) is
+        found, update `src/ff/draft_sync.py` accordingly. If nothing live
+        exists, promote manual entry (already working, `--no-sync` in
+        `scripts/auction.py`) from fallback to the documented primary path,
+        and demote auto-sync to "reconciliation after the draft ends."
+  - [x] Install the `claude-in-chrome` extension and grant it
+        `fantasy.espn.com` permission -- done, connected 2026-08-26.
 
 - [ ] **3. Fix the console's inflation adjustment.** Two problems, both in the
       number the console consults most. `DraftState.inflation()` is
