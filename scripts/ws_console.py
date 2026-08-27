@@ -215,15 +215,16 @@ class TextualWsApp(App):
         try:
             self._drain()
         except Exception as exc:                                  # noqa: BLE001
-            self.banner.show(
+            message = (
                 f"LIVE FEED ERROR: {exc!r} -- display and auto-record hit an error on one "
-                "frame and are continuing. Check ws-log-*.jsonl and your roster carefully.",
-                alert=True,
-            )
+                "frame and are continuing. Check ws-log-*.jsonl and your roster carefully.")
+            self.banner.show(message, alert=True)
+            self._flash(f"[red]{message}[/red]")
 
     def _drain(self) -> None:
         for alert in self.ws.drain_alerts():
             self.banner.show(alert, alert=True)
+            self._flash(f"[red]{alert}[/red]")
 
         events = self.ws.drain()
         if not events:
@@ -453,7 +454,15 @@ class TextualWsApp(App):
     async def _reload_nominations(self) -> None:
         """Rebuild the list from data/nomination-list.txt, filtered to players
         who are still available. clear() defers its removals, so it has to be
-        awaited before the new rows go in."""
+        awaited before the new rows go in.
+
+        This runs after every recorded sale, and clear() always resets the
+        highlight to None -- so the previously highlighted player's name is
+        captured first and restored afterward, rather than always landing
+        back on row 0."""
+        previous = self.nominations.highlighted_child
+        previous_name = previous.player_name if previous else None
+
         await self.nominations.clear()
         taken = self.state.taken()
         for name in self.nomination_names:
@@ -465,10 +474,21 @@ class TextualWsApp(App):
                 match.position if match else "?",
                 f"${match.value}" if match else "-",
             ))
+
         # ListView.append() doesn't highlight anything on its own, and a
         # freshly-rebuilt list needs something highlighted for arrow keys
-        # (and an immediate "n") to act on.
-        if self.nominations.index is None and self.nominations.children:
+        # (and an immediate "n") to act on. Prefer restoring the player who
+        # was highlighted before the reload; fall back to row 0 if they're
+        # no longer in the list (e.g. they were the one just taken).
+        if previous_name is not None:
+            for i, row in enumerate(self.nominations.children):
+                if row.player_name == previous_name:
+                    self.nominations.index = i
+                    break
+            else:
+                if self.nominations.children:
+                    self.nominations.index = 0
+        elif self.nominations.children:
             self.nominations.index = 0
 
     def action_nominate(self) -> None:
@@ -498,11 +518,20 @@ class TextualWsApp(App):
         self.banner.show("YOUR TURN TO NOMINATE -- highlight a player and press n")
         self.screen.add_class("my-turn")
         self.bell()
-        self.nominations.focus()
+        # Don't steal focus from an open command input: the input stays
+        # displayed but stops receiving keystrokes, and the next `n` keypress
+        # meant for it fires the nominate hotkey instead.
+        if not self.command.has_focus:
+            self.nominations.focus()
 
     def _clear_turn_alert(self) -> None:
-        self.banner.hide()
         self.screen.remove_class("my-turn")
+        # A watchdog/reconnect alert or a LIVE FEED ERROR also shows on this
+        # banner and must survive the next Nomination or Sold event -- those
+        # fire constantly during a live draft and would otherwise wipe an
+        # alert before it's been seen.
+        if not self.banner.has_class("alert"):
+            self.banner.hide()
 
     def action_command(self) -> None:
         self.command.display = True

@@ -98,6 +98,18 @@ def make_app(tmp_path, nomination_list=("Justin Jefferson", "Kenneth Walker III"
 
 
 @pytest.mark.asyncio
+async def test_nominations_has_a_minimum_height_floor(tmp_path):
+    """At a standard 80x24 terminal the fixed heights of #status, #middle
+    and #analysis alone sum to 25 rows, leaving 1fr no room -- the nomination
+    list that `n` acts on must stay visible regardless of terminal size."""
+    app, _, _ = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        min_height = app.nominations.styles.min_height
+        assert min_height is not None
+        assert min_height.value >= 5
+
+
+@pytest.mark.asyncio
 async def test_app_mounts_every_panel(tmp_path):
     app, _, _ = make_app(tmp_path)
     async with app.run_test():
@@ -321,6 +333,49 @@ async def test_someone_elses_turn_lowers_the_banner(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_a_watchdog_alert_survives_an_unrelated_nomination(tmp_path):
+    app, ws, _ = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        ws.alerts.append("no frames received in 45s -- forcing reconnect")
+        await app._poll()
+        await pilot.pause()
+        assert app.banner.display
+        assert app.banner.has_class("alert")
+        # Someone else's nomination fires constantly during a live draft and
+        # must not silently wipe a live alert before it can be read.
+        ws.feed(draft_ws.Nomination(7, 25000))
+        await app._poll()
+        await pilot.pause()
+        assert app.banner.display
+        assert app.banner.has_class("alert")
+
+
+@pytest.mark.asyncio
+async def test_a_watchdog_alert_survives_a_sold_event(tmp_path):
+    app, ws, _ = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        ws.alerts.append("no frames received in 45s -- forcing reconnect")
+        await app._poll()
+        await pilot.pause()
+        assert app.banner.display
+        ws.feed(draft_ws.Sold(4, 3915511, 1, 54, 0))
+        await app._poll()
+        await pilot.pause()
+        assert app.banner.display
+        assert app.banner.has_class("alert")
+
+
+@pytest.mark.asyncio
+async def test_drained_alerts_and_feed_errors_also_land_in_the_bid_log(tmp_path):
+    app, ws, _ = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        ws.alerts.append("no frames received in 45s -- forcing reconnect")
+        await app._poll()
+        await pilot.pause()
+        assert any("forcing reconnect" in str(line) for line in app.bidlog.lines)
+
+
+@pytest.mark.asyncio
 async def test_a_failed_nomination_send_is_reported_not_swallowed(tmp_path):
     app, ws, _ = make_app(tmp_path)
     ws.client.fail_with = RuntimeError("not connected to the draft room")
@@ -463,6 +518,61 @@ async def test_command_quit_exits(tmp_path):
         app._run_command("quit")
         await pilot.pause()
     assert not app.is_running
+
+
+@pytest.mark.asyncio
+async def test_a_nomination_turn_does_not_steal_focus_from_an_open_command(tmp_path):
+    app, ws, _ = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.press("colon")
+        await pilot.pause()
+        assert app.command.has_focus
+        ws.feed(draft_ws.Nomination(6, 25000))     # config.MY_TEAM_ID is 6
+        await app._poll()
+        await pilot.pause()
+        # The turn alert still fires, but must not pull focus off the command
+        # input the user was mid-way through typing into.
+        assert app.command.has_focus
+        assert app.banner.display
+
+
+@pytest.mark.asyncio
+async def test_a_nomination_turn_still_grabs_focus_when_command_is_closed(tmp_path):
+    app, ws, _ = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        ws.feed(draft_ws.Nomination(6, 25000))
+        await app._poll()
+        await pilot.pause()
+        assert app.nominations.has_focus
+
+
+@pytest.mark.asyncio
+async def test_reload_after_a_sale_preserves_the_highlighted_player(tmp_path):
+    app, ws, state = make_app(
+        tmp_path, nomination_list=("Justin Jefferson", "Kenneth Walker III", "Tony Pollard"))
+    async with app.run_test() as pilot:
+        app.nominations.index = 2  # highlight Tony Pollard
+        assert app.nominations.highlighted_child.player_name == "Tony Pollard"
+        # A Sold event for an unrelated player triggers _reload_nominations,
+        # which must not reset the highlight back to row 0.
+        ws.feed(draft_ws.Sold(4, 3915511, 1, 54, 0))    # Bijan Robinson, not on the list
+        await app._poll()
+        await pilot.pause()
+        assert app.nominations.highlighted_child.player_name == "Tony Pollard"
+
+
+@pytest.mark.asyncio
+async def test_reload_falls_back_to_row_zero_when_the_highlighted_player_is_taken(tmp_path):
+    app, ws, state = make_app(
+        tmp_path, nomination_list=("Justin Jefferson", "Kenneth Walker III"))
+    async with app.run_test() as pilot:
+        app.nominations.index = 1  # highlight Kenneth Walker III
+        assert app.nominations.highlighted_child.player_name == "Kenneth Walker III"
+        state.record("Kenneth Walker III", "RB", 38, "HH")
+        await app._reload_nominations()
+        await pilot.pause()
+        assert app.nominations.highlighted_child.player_name == "Justin Jefferson"
+        assert app.nominations.index == 0
 
 
 @pytest.mark.asyncio

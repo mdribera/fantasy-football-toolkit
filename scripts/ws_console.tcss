@@ -45,6 +45,7 @@ Screen.my-turn {
 
 #nominations {
     height: 1fr;
+    min-height: 5;
     border: round $primary;
 }
 
