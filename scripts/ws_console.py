@@ -420,7 +420,8 @@ class TextualWsApp(App):
         match = self.lookup.get(name.lower())
         plan = auction.evaluate_bid(
             args, pointer.high_bid, self.state.max_bid(self.state.my_team),
-            self._adjusted(match) or None)
+            self._adjusted(match) or None,
+            already_high=(self._last_bid_team == self.state.my_team))
 
         if isinstance(plan, auction.BidRefused):
             self._flash(f"[red]Refused:[/red] {plan.reason}")

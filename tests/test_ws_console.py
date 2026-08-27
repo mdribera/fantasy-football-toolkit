@@ -402,6 +402,19 @@ async def test_b_bids_one_over_the_current_high(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_b_refuses_when_you_already_hold_the_high(tmp_path):
+    app, ws, _ = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        ws.feed(draft_ws.Bid(6, 3915511, 40, 25000, 12731))    # team 6 is us
+        await app._poll()
+        await pilot.pause()
+        await pilot.press("b")
+        await pilot.pause()
+    assert ws.client.sent == []
+    assert any("already hold" in str(line) for line in app.bidlog.lines)
+
+
+@pytest.mark.asyncio
 async def test_b_with_no_active_nomination_sends_nothing(tmp_path):
     app, ws, _ = make_app(tmp_path)
     async with app.run_test() as pilot:

@@ -183,3 +183,9 @@ def test_bid_verdict_styles_run_green_to_red():
     assert auction.bid_verdict(40, 40).style == "dim"
     assert auction.bid_verdict(50, 40).style == "yellow"
     assert auction.bid_verdict(70, 40).style == "red"
+
+
+def test_evaluate_bid_refuses_when_you_already_hold_the_high():
+    plan = auction.evaluate_bid([], 40, 100, 50, already_high=True)
+    assert isinstance(plan, auction.BidRefused)
+    assert "already hold" in plan.reason

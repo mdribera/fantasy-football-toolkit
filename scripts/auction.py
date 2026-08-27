@@ -188,11 +188,13 @@ TYPO_GUARD_SHEET_MULTIPLE = 1.5  # confirm if the bid exceeds this multiple of a
 
 
 def evaluate_bid(args: list[str], current_high: int, my_max_bid: int,
-                  adjusted_value: int | None) -> BidPlan:
+                  adjusted_value: int | None, already_high: bool = False) -> BidPlan:
     """Decide what 'b' or 'b <amount>' should do, before anything is sent.
 
     args is the command split on whitespace with the leading 'b' removed.
-    No amount means "current high + 1", the common case.
+    No amount means "current high + 1", the common case. already_high means
+    the caller already holds the current high bid on this player -- refused
+    unconditionally, since raising your own price buys nothing.
     """
     if args:
         if not args[0].isdigit():
@@ -201,6 +203,9 @@ def evaluate_bid(args: list[str], current_high: int, my_max_bid: int,
     else:
         amount = current_high + 1
 
+    if already_high:
+        return BidRefused(f"you already hold the ${current_high} high bid -- "
+                          "no need to bid against yourself")
     if amount <= current_high:
         return BidRefused(f"${amount} does not beat the current high of ${current_high}")
     if amount > my_max_bid:
