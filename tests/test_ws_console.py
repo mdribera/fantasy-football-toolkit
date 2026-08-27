@@ -647,3 +647,48 @@ async def test_sold_stays_quiet_for_a_genuine_matching_duplicate(tmp_path):
         await pilot.pause()
         assert not app.banner.display
         assert any("already recorded by hand" in str(line) for line in app.bidlog.lines)
+
+
+@pytest.mark.asyncio
+async def test_bid_watchdog_alerts_when_a_sent_bid_never_gets_confirmed(tmp_path):
+    app, ws, _ = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        ws.feed(draft_ws.Bid(4, 3915511, 40, 25000, 12731))
+        await app._poll()
+        await pilot.pause()
+        await pilot.press("b")                          # sends BID 3915511 41
+        await pilot.pause()
+        assert app._pending_bid is not None
+        player_id, amount, _ = app._pending_bid
+        app._pending_bid = (player_id, amount, app._pending_bid[2] - 100)  # backdate
+        ws.feed(draft_ws.Clock(2, 12000, high_bid_team=4, player_id=3915511,
+                               high_bid_amount=40))       # still $40, our $41 never landed
+        await app._poll()
+        await pilot.pause()
+        # banner.display reads back False once the app has torn down, so
+        # check it before the `async with` block exits.
+        assert app.banner.display
+        assert app._pending_bid is None                  # alerts once, doesn't keep spamming
+        lines_after_alert = len(app.bidlog.lines)
+        # A second check with nothing pending must not write another alert.
+        app._check_bid_watchdog()
+        assert len(app.bidlog.lines) == lines_after_alert
+    assert any("unconfirmed" in str(line) for line in app.bidlog.lines)
+
+
+@pytest.mark.asyncio
+async def test_bid_watchdog_clears_when_the_bid_is_confirmed(tmp_path):
+    app, ws, _ = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        ws.feed(draft_ws.Bid(4, 3915511, 40, 25000, 12731))
+        await app._poll()
+        await pilot.pause()
+        await pilot.press("b")                          # sends BID 3915511 41
+        await pilot.pause()
+        ws.feed(draft_ws.Bid(6, 3915511, 41, 25000, 12000))   # server confirms it: team 6 is us
+        await app._poll()
+        await pilot.pause()
+        # banner.display reads back False once the app has torn down
+        # regardless of alert state, so check it before the block exits.
+        assert not app.banner.display
+    assert app._pending_bid is None

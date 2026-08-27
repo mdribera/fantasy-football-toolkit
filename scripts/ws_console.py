@@ -13,6 +13,8 @@ no cross-thread writes to race against.
 
 from __future__ import annotations
 
+import time
+
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -155,6 +157,8 @@ class ConfirmBidScreen(ModalScreen[bool]):
 class TextualWsApp(App):
     CSS_PATH = "ws_console.tcss"
     TITLE = "Auction console"
+    BID_WATCHDOG_TIMEOUT_S = 4  # CLOCK ticks ~1/s, so a few seconds of slack
+                                # before treating a sent bid as unconfirmed
 
     BINDINGS = [
         Binding("b", "bid", "bid +1"),
@@ -175,6 +179,7 @@ class TextualWsApp(App):
         self.lookup = {v.name.lower(): v for v in vals}
         self._log_player_id: int | None = None
         self._last_bid_team = ""
+        self._pending_bid: tuple[int, int, float] | None = None
 
     def compose(self) -> ComposeResult:
         yield Banner(id="banner")
@@ -297,6 +302,28 @@ class TextualWsApp(App):
 
         self._sync_pointer()
         self._refresh_panels()
+        self._check_bid_watchdog()
+
+    def _check_bid_watchdog(self) -> None:
+        if self._pending_bid is None:
+            return
+        player_id, amount, sent_at = self._pending_bid
+        pointer = self.ws.pointer
+        if pointer.player_id != player_id:
+            self._pending_bid = None                    # nomination moved on either way
+            return
+        if pointer.high_bid == amount and self._last_bid_team == self.state.my_team:
+            self._pending_bid = None                     # confirmed: our bid landed
+            return
+        if time.monotonic() - sent_at > self.BID_WATCHDOG_TIMEOUT_S:
+            name, _ = self.resolver.resolve(player_id)
+            message = (
+                f"Bid ${amount} on {name} was sent {self.BID_WATCHDOG_TIMEOUT_S:.0f}s "
+                "ago but the server hasn't confirmed it as the high bid -- check "
+                "ESPN's own UI directly.")
+            self.banner.show(message, alert=True)
+            self._flash(f"[red]{message} (unconfirmed)[/red]")
+            self._pending_bid = None                     # alert once, don't spam every poll
 
     def _sync_pointer(self) -> None:
         """Fold the pointer into StatusPanel. The pointer, not this app, is
@@ -463,6 +490,7 @@ class TextualWsApp(App):
         except RuntimeError as exc:
             self._flash(f"[red]Not sent:[/red] {exc} -- bid in ESPN's own UI if urgent.")
         else:
+            self._pending_bid = (player_id, amount, time.monotonic())
             self._flash(f"[green]Sent bid ${amount} on {name}.[/green]")
 
     async def _reload_nominations(self) -> None:
