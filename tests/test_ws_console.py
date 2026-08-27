@@ -258,3 +258,77 @@ async def test_analysis_falls_back_to_overall_inflation(tmp_path):
         await app._poll()
         await pilot.pause()
         assert "overall" in app.analysis.market_line
+
+
+@pytest.mark.asyncio
+async def test_nomination_list_shows_available_players_only(tmp_path):
+    app, ws, state = make_app(tmp_path)
+    state.record("Justin Jefferson", "WR", 52, "HH")
+    async with app.run_test() as pilot:
+        await app._reload_nominations()
+        await pilot.pause()
+        names = [row.player_name for row in app.nominations.children]
+        assert names == ["Kenneth Walker III"]
+
+
+@pytest.mark.asyncio
+async def test_n_nominates_the_highlighted_row(tmp_path):
+    app, ws, _ = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        ws.feed(draft_ws.Nomination(6, 25000))     # config.MY_TEAM_ID is 6
+        await app._poll()
+        await pilot.pause()
+        app.nominations.focus()
+        await pilot.press("n")
+        await pilot.pause()
+    assert ws.client.sent == [("NOMINATE", 3915514, 1)]
+
+
+@pytest.mark.asyncio
+async def test_n_refuses_when_it_is_not_your_turn(tmp_path):
+    app, ws, _ = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        ws.feed(draft_ws.Nomination(7, 25000))
+        await app._poll()
+        await pilot.pause()
+        await pilot.press("n")
+        await pilot.pause()
+    assert ws.client.sent == []
+
+
+@pytest.mark.asyncio
+async def test_your_nomination_turn_raises_the_banner(tmp_path):
+    app, ws, _ = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        ws.feed(draft_ws.Nomination(6, 25000))
+        await app._poll()
+        await pilot.pause()
+        assert app.banner.display
+        assert app.screen.has_class("my-turn")
+
+
+@pytest.mark.asyncio
+async def test_someone_elses_turn_lowers_the_banner(tmp_path):
+    app, ws, _ = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        ws.feed(draft_ws.Nomination(6, 25000))
+        await app._poll()
+        await pilot.pause()
+        ws.feed(draft_ws.Nomination(7, 25000))
+        await app._poll()
+        await pilot.pause()
+        assert not app.screen.has_class("my-turn")
+
+
+@pytest.mark.asyncio
+async def test_a_failed_nomination_send_is_reported_not_swallowed(tmp_path):
+    app, ws, _ = make_app(tmp_path)
+    ws.client.fail_with = RuntimeError("not connected to the draft room")
+    async with app.run_test() as pilot:
+        ws.feed(draft_ws.Nomination(6, 25000))
+        await app._poll()
+        await pilot.pause()
+        app.nominations.focus()
+        await pilot.press("n")
+        await pilot.pause()
+        assert any("Not sent" in str(line) for line in app.bidlog.lines)

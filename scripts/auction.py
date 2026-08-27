@@ -364,26 +364,6 @@ def load_nomination_list(path: Path) -> list[str]:
     return [line.strip() for line in path.read_text().splitlines() if line.strip()]
 
 
-def show_nomination_list(state: draft_state.DraftState, vals: list["values.Valuation"],
-                          names: list[str]) -> None:
-    if not names:
-        console.print("[dim]No prepared nomination list (data/nomination-list.txt).[/dim]")
-        return
-    lookup = {v.name.lower(): v for v in vals}
-    taken = state.taken()
-    table = Table(title="Prepared nomination list")
-    table.add_column("Player")
-    table.add_column("Pos")
-    table.add_column("Sheet", justify="right")
-    for name in names:
-        if name in taken:
-            continue
-        match = lookup.get(name.lower())
-        table.add_row(name, match.position if match else "?", f"${match.value}" if match else "-")
-    console.print(table)
-    console.print("Nominate with: n <player name>")
-
-
 def load_values() -> list[values.Valuation]:
     if not VALUES_PATH.exists():
         console.print("[red]No data/values.json.[/red] Run scripts/build_values.py first.")

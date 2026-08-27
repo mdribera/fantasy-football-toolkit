@@ -18,7 +18,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal
 from textual.reactive import reactive
-from textual.widgets import Footer, ListView, RichLog, Static
+from textual.widgets import Footer, Label, ListItem, ListView, RichLog, Static
 
 import auction
 from ff import config, draft_state, draft_sync, draft_ws, values
@@ -104,6 +104,15 @@ class AnalysisPanel(Static):
         return Text.from_markup(body or "[dim]Nothing nominated.[/dim]")
 
 
+class NominationRow(ListItem):
+    """One prepared nomination. Carries the player's name so `n` can act on
+    whatever is highlighted without re-parsing the rendered label."""
+
+    def __init__(self, name: str, position: str, value: str):
+        super().__init__(Label(f"{name:<26}{position:<5}{value}"))
+        self.player_name = name
+
+
 class NominationList(ListView):
     """The prepared nomination list, arrow-navigable, filtered to players who
     are still available. `n` nominates whatever is highlighted."""
@@ -143,7 +152,7 @@ class TextualWsApp(App):
         yield NominationList(id="nominations")
         yield Footer()
 
-    def on_mount(self) -> None:
+    async def on_mount(self) -> None:
         self.banner = self.query_one("#banner", Banner)
         self.status = self.query_one("#status", StatusPanel)
         self.bidlog = self.query_one("#bidlog", BidLog)
@@ -157,8 +166,9 @@ class TextualWsApp(App):
         self.nominations.border_title = "Nomination list (up/down to move, n to nominate)"
         self.status.border_title = "STATUS"
 
-        self.set_interval(POLL_INTERVAL_S, self._poll)
+        await self._reload_nominations()
         self._refresh_panels()
+        self.set_interval(POLL_INTERVAL_S, self._poll)
 
     async def _poll(self) -> None:
         """Drain the websocket and push everything at the widgets.
@@ -200,6 +210,10 @@ class TextualWsApp(App):
             if isinstance(event, draft_ws.Nomination):
                 team = config.TEAMS.get(event.team_id, f"TEAM{event.team_id}")
                 self._flash(f"[bold]NOMINATION[/bold] {team} is on the clock")
+                if event.team_id == config.MY_TEAM_ID:
+                    self._raise_turn_alert()
+                else:
+                    self._clear_turn_alert()
             elif isinstance(event, draft_ws.Bid):
                 team = config.TEAMS.get(event.team_id, f"TEAM{event.team_id}")
                 self._last_bid_team = team
@@ -221,11 +235,13 @@ class TextualWsApp(App):
                 elif self.state.record_pick(name, position, event.price, team,
                                             espn_pick_id=event.player_id):
                     taken.add(name.lower())
+                    self.call_later(self._reload_nominations)
                     match = self.lookup.get(name.lower())
                     note = (f" (sheet ${match.value}, {match.value - event.price:+d})"
                             if match else "")
                     self._flash(f"[green]SOLD[/green] {name} ${event.price} "
                                 f"-> {team}{note}")
+                    self._clear_turn_alert()
             elif isinstance(event, draft_ws.WsError):
                 self._flash(f"[yellow]unparsed frame:[/yellow] {event.raw!r} "
                             f"({event.reason})")
@@ -357,8 +373,59 @@ class TextualWsApp(App):
     def action_bid(self) -> None:
         """Placeholder until Task 6."""
 
+    async def _reload_nominations(self) -> None:
+        """Rebuild the list from data/nomination-list.txt, filtered to players
+        who are still available. clear() defers its removals, so it has to be
+        awaited before the new rows go in."""
+        await self.nominations.clear()
+        taken = self.state.taken()
+        for name in self.nomination_names:
+            if name in taken:
+                continue
+            match = self.lookup.get(name.lower())
+            await self.nominations.append(NominationRow(
+                name,
+                match.position if match else "?",
+                f"${match.value}" if match else "-",
+            ))
+        # ListView.append() doesn't highlight anything on its own, and a
+        # freshly-rebuilt list needs something highlighted for arrow keys
+        # (and an immediate "n") to act on.
+        if self.nominations.index is None and self.nominations.children:
+            self.nominations.index = 0
+
     def action_nominate(self) -> None:
-        """Placeholder until Task 5."""
+        if self.ws.pointer.nominating_team != config.MY_TEAM_ID:
+            self._flash("[yellow]It is not your nomination turn.[/yellow]")
+            return
+        row = self.nominations.highlighted_child
+        if row is None:
+            self._flash("[yellow]Nothing highlighted to nominate.[/yellow]")
+            return
+        match = self.lookup.get(row.player_name.lower())
+        if not match or match.espn_id is None:
+            self._flash(f"[red]Unknown or unresolvable player: "
+                        f"{row.player_name}[/red]")
+            return
+        try:
+            self.ws.client.send_nomination(match.espn_id, 1)
+        except RuntimeError as exc:
+            self._flash(f"[red]Not sent:[/red] {exc} -- nominate in ESPN's own UI "
+                        "if urgent.")
+        else:
+            self._flash(f"[green]Nominated {match.name} at $1.[/green]")
+
+    def _raise_turn_alert(self) -> None:
+        """An idle nomination turn is an unattended-purchase risk, so this
+        takes the border, the banner, and the bell all at once."""
+        self.banner.show("YOUR TURN TO NOMINATE -- highlight a player and press n")
+        self.screen.add_class("my-turn")
+        self.bell()
+        self.nominations.focus()
+
+    def _clear_turn_alert(self) -> None:
+        self.banner.hide()
+        self.screen.remove_class("my-turn")
 
     def action_command(self) -> None:
         """Placeholder until Task 7."""
