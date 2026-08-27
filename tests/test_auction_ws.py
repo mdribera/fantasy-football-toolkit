@@ -42,6 +42,12 @@ def test_clock_state_3_leaves_pointer_unchanged():
     assert updated is pointer
 
 
+def test_unrelated_event_leaves_pointer_unchanged():
+    pointer = auction.WsAuctionPointer(3915511, 43, 6)
+    updated = auction.apply_ws_event(pointer, draft_ws.BidAck(6, 4426348, 56))
+    assert updated is pointer
+
+
 def test_clock_milestone_announces_each_threshold_once():
     announced: set[int] = set()
     assert auction.clock_milestone(11000, announced) is None
