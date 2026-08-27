@@ -3,8 +3,6 @@
 
 Commands (type at the > prompt):
   <player> <price> <team>   record a purchase        e.g. "Josh Allen 62 ME"
-  b [<amount>]              place a bid (ws mode)    e.g. "b 45" or just "b"
-  n <player>                nominate a player (ws mode)
   me                        my roster, budget, max bid, unfilled slots
   best [POS] [n]            best remaining by value
   need                      best remaining at positions I still must fill
@@ -19,7 +17,9 @@ auto-records completed picks as they close -- see 'sync' to force a pull, and
 --no-sync to disable it and enter everything by hand. If the feed goes quiet,
 a banner says so; manual entry keeps working regardless.
 
-Use --ws for live websocket console mode, or --mirror as a fallback.
+Use --ws for the live websocket console, a full-screen Textual view with
+hotkeys for bidding and nominating. --mirror is the fallback if the socket is
+unavailable.
 
 State persists to data/draft-state.json, so a crashed terminal loses nothing.
 """
