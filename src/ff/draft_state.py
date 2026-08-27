@@ -41,7 +41,9 @@ class Purchase:
     position: str
     price: int
     team: str
-    espn_pick_id: int | None = None  # ESPN's stable per-slot id, for idempotent import
+    espn_pick_id: int | None = None  # ESPN's permanent id for the real player,
+                                      # shared across every league and draft that
+                                      # player appears in -- not scoped to one draft
 
 
 @dataclass

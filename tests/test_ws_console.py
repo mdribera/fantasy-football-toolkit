@@ -617,3 +617,33 @@ async def test_b_drains_pending_events_before_evaluating_the_bid(tmp_path):
         await pilot.press("b")
         await pilot.pause()
     assert ws.client.sent == [("BID", 3915511, 46)]
+
+
+@pytest.mark.asyncio
+async def test_sold_flags_a_mismatched_duplicate_loudly(tmp_path):
+    """A stale record from an unrelated earlier practice draft, for the same
+    real player, must not be mistaken for a harmless by-hand duplicate."""
+    app, ws, state = make_app(tmp_path)
+    state.record_pick("Bijan Robinson", "RB", 40, "HH", espn_pick_id=9999999)
+    async with app.run_test() as pilot:
+        ws.feed(draft_ws.Sold(4, 3915511, 1, 54, 0))    # Bijan Robinson, different team/price
+        await app._poll()
+        await pilot.pause()
+        assert app.banner.display
+        # The flashed message is long enough to wrap across several bid log
+        # rows at the panel's width, so check the joined plain text rather
+        # than one row at a time.
+        assert "may now be wrong" in " ".join(line.text for line in app.bidlog.lines)
+    assert len(state.purchases) == 1                    # not double-recorded either
+
+
+@pytest.mark.asyncio
+async def test_sold_stays_quiet_for_a_genuine_matching_duplicate(tmp_path):
+    app, ws, state = make_app(tmp_path)
+    state.record("Bijan Robinson", "RB", 54, "CCT")
+    async with app.run_test() as pilot:
+        ws.feed(draft_ws.Sold(4, 3915511, 1, 54, 0))    # same team, same price
+        await app._poll()
+        await pilot.pause()
+        assert not app.banner.display
+        assert any("already recorded by hand" in str(line) for line in app.bidlog.lines)

@@ -267,8 +267,20 @@ class TextualWsApp(App):
                 team = config.TEAMS.get(event.team_id, f"TEAM{event.team_id}")
                 name, position = self.resolver.resolve(event.player_id)
                 if name.lower() in taken:
-                    self._flash(f"[dim]SOLD {name} already recorded by hand, "
-                                f"skipping duplicate.[/dim]")
+                    existing = next(p for p in self.state.purchases
+                                    if p.player.lower() == name.lower())
+                    if (existing.team == draft_state.normalize_team(team)
+                            and existing.price == event.price):
+                        self._flash(f"[dim]SOLD {name} already recorded by hand, "
+                                    f"skipping duplicate.[/dim]")
+                    else:
+                        message = (
+                            f"SOLD {name} to {team} for ${event.price}, but "
+                            f"data/draft-state.json already has {existing.team} "
+                            f"for ${existing.price} on the same player -- your "
+                            f"roster/budget may now be wrong. Check the file by hand.")
+                        self.banner.show(message, alert=True)
+                        self._flash(f"[red]{message}[/red]")
                 elif self.state.record_pick(name, position, event.price, team,
                                             espn_pick_id=event.player_id):
                     taken.add(name.lower())
