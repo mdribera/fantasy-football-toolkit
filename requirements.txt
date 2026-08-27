@@ -3,5 +3,6 @@ requests>=2.32.0
 python-dotenv>=1.0.0
 rich>=13.7.0
 websocket-client>=1.8.0
-prompt_toolkit>=3.0.0
+textual>=8.2.0
 pytest>=8.0.0
+pytest-asyncio>=1.0.0

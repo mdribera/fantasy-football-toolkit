@@ -1,0 +1,67 @@
+Screen.my-turn {
+    border: heavy $warning;
+}
+
+#banner {
+    display: none;
+    height: auto;
+    padding: 0 1;
+    text-align: center;
+    text-style: bold;
+    background: $warning;
+    color: $text;
+}
+
+#banner.alert {
+    background: $error;
+}
+
+#status {
+    height: 4;
+    border: round $primary;
+    padding: 0 1;
+}
+
+#middle {
+    height: 12;
+}
+
+#bidlog {
+    width: 2fr;
+    border: round $primary;
+}
+
+#roster {
+    width: 1fr;
+    border: round $primary;
+    padding: 0 1;
+}
+
+#analysis {
+    height: 9;
+    border: round $primary;
+    padding: 0 1;
+}
+
+#nominations {
+    height: 1fr;
+    border: round $primary;
+}
+
+#command {
+    display: none;
+    dock: bottom;
+}
+
+ConfirmBidScreen {
+    align: center middle;
+}
+
+#confirm-dialog {
+    width: 64;
+    height: auto;
+    padding: 1 2;
+    border: thick $warning;
+    background: $panel;
+    text-align: center;
+}
