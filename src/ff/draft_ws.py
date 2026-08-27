@@ -365,6 +365,7 @@ class DraftRoomClient:
     # would otherwise drop the connection.
     LIVENESS_TIMEOUT_S = 45
     RECONNECT_BACKOFF_S = 3
+    WATCHDOG_POLL_INTERVAL_S = 5  # how often the watchdog checks for silence
 
     def __init__(self, join_url: str, cred: config.EspnCredentials, log_path: Path | None = None):
         self.join_url = join_url
@@ -489,7 +490,7 @@ class DraftRoomClient:
             self._log("send", frame)
 
     def _watchdog(self, ws: websocket.WebSocketApp, stop_helpers: threading.Event) -> None:
-        while not stop_helpers.wait(5):
+        while not stop_helpers.wait(self.WATCHDOG_POLL_INTERVAL_S):
             if time.monotonic() - self._last_frame_at > self.LIVENESS_TIMEOUT_S:
                 self._alert(f"no frames received in {self.LIVENESS_TIMEOUT_S}s -- forcing reconnect")
                 ws.close()
