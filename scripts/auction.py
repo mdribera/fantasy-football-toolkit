@@ -299,9 +299,33 @@ def _ws_printer_loop(ws: WsController, state: draft_state.DraftState,
         _drain_ws(ws, state, resolver, vals, nomination_list)
 
 
+NOMINATION_LIST_PATH = Path(__file__).resolve().parents[1] / "data" / "nomination-list.txt"
+
+
+def load_nomination_list(path: Path) -> list[str]:
+    if not path.exists():
+        return []
+    return [line.strip() for line in path.read_text().splitlines() if line.strip()]
+
+
 def show_nomination_list(state: draft_state.DraftState, vals: list["values.Valuation"],
                           names: list[str]) -> None:
-    console.print("[dim]Nomination list not wired up yet.[/dim]")
+    if not names:
+        console.print("[dim]No prepared nomination list (data/nomination-list.txt).[/dim]")
+        return
+    lookup = {v.name.lower(): v for v in vals}
+    taken = state.taken()
+    table = Table(title="Prepared nomination list")
+    table.add_column("Player")
+    table.add_column("Pos")
+    table.add_column("Sheet", justify="right")
+    for name in names:
+        if name in taken:
+            continue
+        match = lookup.get(name.lower())
+        table.add_row(name, match.position if match else "?", f"${match.value}" if match else "-")
+    console.print(table)
+    console.print("Nominate with: n <player name>")
 
 
 def load_values() -> list[values.Valuation]:
@@ -443,7 +467,7 @@ def main() -> int:
     resolver = draft_sync.PlayerResolver(VALUES_PATH)
     sync: SyncController | None = None
     ws: WsController | None = None
-    nomination_list: list[str] = []
+    nomination_list = load_nomination_list(NOMINATION_LIST_PATH)
 
     if args.ws:
         join_url = load_join_url(args.join_url_file)
@@ -566,6 +590,21 @@ def main() -> int:
                         elif proceed:
                             ws.client.send_bid(player_id, amount)
                             console.print(f"[green]Sent bid ${amount} on {name}.[/green]")
+            elif head == "n":
+                if not ws:
+                    console.print("[yellow]'n' only works in --ws mode.[/yellow]")
+                elif ws.pointer.nominating_team != config.MY_TEAM_ID:
+                    console.print("[yellow]It is not your nomination turn.[/yellow]")
+                elif len(cmd) < 2:
+                    show_nomination_list(state, vals, nomination_list)
+                else:
+                    name = " ".join(cmd[1:])
+                    match = lookup.get(name.lower())
+                    if not match or match.espn_id is None:
+                        console.print(f"[red]Unknown or unresolvable player: {name}[/red]")
+                    else:
+                        ws.client.send_nomination(match.espn_id, 1)
+                        console.print(f"[green]Nominated {match.name} at $1.[/green]")
             elif len(cmd) >= 3 and cmd[-2].lstrip("$").isdigit():
                 team = cmd[-1]
                 price = int(cmd[-2].lstrip("$"))
