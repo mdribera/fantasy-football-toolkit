@@ -4,8 +4,8 @@ The draft room speaks plain space-delimited text frames over a websocket at
 wss://fantasydraft.espn.com/game-{gameId}/league-{leagueId}/JOIN -- a
 completely separate host from the mDraftDetail REST feed draft_sync.py polls,
 and the only one that updates during a live auction. See
-docs/draft-ws-plan.md for the reverse-engineering notes, field meanings, and
-open questions.
+docs/notes/ws-protocol.md for the reverse-engineering notes, field meanings,
+and open questions.
 
 parse_frame() never raises: an unrecognized or malformed frame comes back as
 WsError so a live connection can log and move on instead of crashing on a
@@ -67,7 +67,7 @@ class Left:
     once: our own connection, disconnected by the server ~1.5s before its
     own nomination clock would have hit 0 while sitting connected but silent
     (2026-08-26 live rehearsal). The trailing flag's meaning isn't confirmed
-    (only ever seen as 1). See docs/draft-ws-plan.md."""
+    (only ever seen as 1). See docs/notes/ws-protocol.md."""
 
     team_id: int
     swid: str
@@ -110,7 +110,8 @@ class Clock:
       0 -- pre-draft countdown: remaining_ms only.
       1 -- nomination pending: nominating_team has remaining_ms to submit a
            nomination. What happens if it hits 0 with no nomination sent is
-           unconfirmed -- see docs/draft-ws-plan.md rehearsal question 6.
+           unconfirmed -- see docs/notes/ws-protocol.md's "Nomination
+           timeout" section.
       2 -- live bidding: high_bid_team/player_id/high_bid_amount populated.
       3 -- the countdown between nominations: remaining_ms only.
     Other states are unconfirmed."""
@@ -147,7 +148,7 @@ class Bid:
 @dataclass(frozen=True)
 class Sold:
     """Fields 3 and 5 are observational only: their meaning isn't confirmed,
-    and tracking sales doesn't need them. See docs/draft-ws-plan.md."""
+    and tracking sales doesn't need them. See docs/notes/ws-protocol.md."""
 
     team_id: int
     player_id: int
@@ -164,7 +165,7 @@ class Nomination:
 
 # --- client-to-server frames -------------------------------------------
 # Confirmed from a DevTools HAR export of a real practice draft (2026-08-26,
-# see docs/draft-ws-plan.md) -- captured from ESPN's own client, never
+# see docs/notes/ws-protocol.md) -- captured from ESPN's own client, never
 # guessed. Parsed here so the decoder can be verified end to end against
 # that capture; nothing in this module ever sends a frame.
 
@@ -349,7 +350,7 @@ class DraftRoomClient:
     Reconnects on its own, with the same token, if frames stop arriving
     (the watchdog) rather than trusting websocket-client to notice an
     unexpected server-side close -- confirmed necessary by the 2026-08-26
-    live rehearsal, see docs/draft-ws-plan.md. `alerts` collects messages
+    live rehearsal, see docs/notes/rehearsal-log.md. `alerts` collects messages
     the console should surface loudly (reconnects, unparsed frames, send
     failures) rather than log quietly.
 
@@ -480,7 +481,7 @@ class DraftRoomClient:
         while not stop_helpers.wait(self.PING_INTERVAL_S):
             # Every sent frame in the HAR capture is newline-terminated, PING
             # included -- omitting it means the server never sends a PONG
-            # back (confirmed live, see docs/draft-ws-plan.md).
+            # back (confirmed live, see docs/notes/rehearsal-log.md).
             frame = f"PING PING%20{int(time.time() * 1000)}\n"
             try:
                 ws.send(frame)

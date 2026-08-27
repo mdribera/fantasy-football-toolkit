@@ -136,7 +136,7 @@ def test_draft_ws() -> None:
     """Exercise the draft-room websocket parser.
 
     The literal frame strings below are lifted verbatim from a genuine
-    practice-draft capture (2026-08-26, see docs/draft-ws-plan.md), so this
+    practice-draft capture (2026-08-26, see docs/notes/ws-protocol.md), so this
     doubles as regression coverage against the one schema doubt that capture
     already resolved: BID's amount is field 3, not the constant field 4.
     """

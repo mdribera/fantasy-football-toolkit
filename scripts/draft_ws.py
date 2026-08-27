@@ -60,7 +60,7 @@ from ff import config, draft_state, draft_sync, draft_ws
 from ff.draft_ws import redact_token, parse_join_url
 
 console = Console()
-PING_INTERVAL_S = 15  # confirmed cadence from a HAR capture, see docs/draft-ws-plan.md
+PING_INTERVAL_S = 15  # confirmed cadence from a HAR capture, see docs/notes/ws-protocol.md
 VALUES_PATH = Path(__file__).resolve().parents[1] / "data" / "values.json"
 SCRATCH_STATE_PATH = Path(__file__).resolve().parents[1] / "data" / "cache" / "draft-ws-state-replay.json"
 DEFAULT_JOIN_URL_FILE = Path(__file__).resolve().parents[1] / "data" / "join-url.txt"

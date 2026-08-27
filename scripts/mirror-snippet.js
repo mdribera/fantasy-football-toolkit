@@ -1,7 +1,7 @@
 // Fallback draft mirror: watches ESPN's own pick-history panel in Mark's
 // draft-room tab and POSTs each new sale to the console's local listener.
 // Never touches the websocket, the token, or cookies -- reads only what's
-// already rendered on screen. See docs/draft-ws-plan.md Workstream 4.
+// already rendered on screen. See docs/draft-day-runbook.md's fallback section.
 //
 // The selectors below (pick-history/draft-history, row/li) are a starting
 // guess, not confirmed against the real draft room DOM -- Rehearsal 1

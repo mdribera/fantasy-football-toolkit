@@ -3,7 +3,7 @@ reconnect behavior. FakeWebSocketApp stands in for websocket.WebSocketApp
 so these run with no real socket: run_forever() blocks until close() is
 called (by the watchdog, by client.stop(), or by the test), then fires
 on_close the same way a real self-triggered close does -- see
-docs/draft-ws-plan.md's "on_close behaves differently..." finding for why
+docs/notes/rehearsal-log.md's "on_close behaves differently..." finding for why
 that distinction matters.
 """
 

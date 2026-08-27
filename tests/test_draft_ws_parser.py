@@ -1,6 +1,6 @@
 """Unit tests for ff.draft_ws's frame parser, against two real captures:
 a three-way bidding war (data/ws-live-test.jsonl) and a full bidirectional
-HAR export (data/ws-from-har.jsonl). See docs/draft-ws-plan.md for what
+HAR export (data/ws-from-har.jsonl). See docs/notes/ws-protocol.md for what
 each fixture settles.
 """
 

@@ -6,7 +6,7 @@ fixture from a real draft, or replay a fixture through the import path.
     scripts/draft_sync.py --record OUT.jsonl # poll a live draft, save every snapshot
     scripts/draft_sync.py --replay IN.jsonl  # feed a fixture through import, reconcile
 
-`--replay` is the rehearsal step from HANDOFF.md: it exercises the exact same
+`--replay` is the rehearsal step from TASKS.md: it exercises the exact same
 DraftFeed / PlayerResolver / DraftState.record_pick path that scripts/auction.py
 uses live, with no ESPN account or timing involved.
 """
