@@ -332,3 +332,82 @@ async def test_a_failed_nomination_send_is_reported_not_swallowed(tmp_path):
         await pilot.press("n")
         await pilot.pause()
         assert any("Not sent" in str(line) for line in app.bidlog.lines)
+
+
+@pytest.mark.asyncio
+async def test_b_bids_one_over_the_current_high(tmp_path):
+    app, ws, _ = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        ws.feed(draft_ws.Bid(4, 3915511, 40, 25000, 12731))
+        await app._poll()
+        await pilot.pause()
+        await pilot.press("b")
+        await pilot.pause()
+    assert ws.client.sent == [("BID", 3915511, 41)]
+
+
+@pytest.mark.asyncio
+async def test_b_with_no_active_nomination_sends_nothing(tmp_path):
+    app, ws, _ = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.press("b")
+        await pilot.pause()
+    assert ws.client.sent == []
+
+
+@pytest.mark.asyncio
+async def test_a_big_jump_opens_the_modal_and_y_confirms(tmp_path):
+    app, ws, _ = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        ws.feed(draft_ws.Bid(4, 3915511, 40, 25000, 12731))
+        await app._poll()
+        await pilot.pause()
+        app._start_bid(["60"])          # $20 over, trips TYPO_GUARD_JUMP
+        await pilot.pause()
+        assert isinstance(app.screen, ws_console.ConfirmBidScreen)
+        await pilot.press("y")
+        await pilot.pause()
+    assert ws.client.sent == [("BID", 3915511, 60)]
+
+
+@pytest.mark.asyncio
+async def test_the_modal_refuses_on_n(tmp_path):
+    app, ws, _ = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        ws.feed(draft_ws.Bid(4, 3915511, 40, 25000, 12731))
+        await app._poll()
+        await pilot.pause()
+        app._start_bid(["60"])
+        await pilot.pause()
+        await pilot.press("n")
+        await pilot.pause()
+    assert ws.client.sent == []
+
+
+@pytest.mark.asyncio
+async def test_a_nomination_change_while_the_modal_is_open_cancels_the_bid(tmp_path):
+    app, ws, _ = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        ws.feed(draft_ws.Bid(4, 3915511, 40, 25000, 12731))
+        await app._poll()
+        await pilot.pause()
+        app._start_bid(["60"])
+        await pilot.pause()
+        ws.feed(draft_ws.Sold(4, 3915511, 1, 40, 0))     # pointer moves on
+        await app._poll()
+        await pilot.press("y")
+        await pilot.pause()
+    assert ws.client.sent == []
+
+
+@pytest.mark.asyncio
+async def test_a_bid_over_your_max_is_refused_without_a_modal(tmp_path):
+    app, ws, _ = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        ws.feed(draft_ws.Bid(4, 3915511, 40, 25000, 12731))
+        await app._poll()
+        await pilot.pause()
+        app._start_bid(["999"])
+        await pilot.pause()
+        assert not isinstance(app.screen, ws_console.ConfirmBidScreen)
+    assert ws.client.sent == []

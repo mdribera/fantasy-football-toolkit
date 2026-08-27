@@ -18,6 +18,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal
 from textual.reactive import reactive
+from textual.screen import ModalScreen
 from textual.widgets import Footer, Label, ListItem, ListView, RichLog, Static
 
 import auction
@@ -116,6 +117,39 @@ class NominationRow(ListItem):
 class NominationList(ListView):
     """The prepared nomination list, arrow-navigable, filtered to players who
     are still available. `n` nominates whatever is highlighted."""
+
+
+class ConfirmBidScreen(ModalScreen[bool]):
+    """The typo guard, modal rather than inline so a busy background cannot
+    hide it and an ambiguous keystroke cannot answer it by accident."""
+
+    BINDINGS = [
+        Binding("y", "confirm", "yes"),
+        Binding("n", "refuse", "no"),
+        Binding("escape", "refuse", "no"),
+    ]
+
+    def __init__(self, amount: int, player: str, reason: str):
+        super().__init__()
+        self.amount = amount
+        self.player = player
+        self.reason = reason
+
+    def compose(self) -> ComposeResult:
+        yield Static(
+            Text.from_markup(
+                f"[yellow]{self.reason}[/yellow]\n\n"
+                f"Bid [bold]${self.amount}[/bold] on [bold]{self.player}[/bold]?\n\n"
+                f"[bold]y[/bold] yes    [bold]n[/bold] no"
+            ),
+            id="confirm-dialog",
+        )
+
+    def action_confirm(self) -> None:
+        self.dismiss(True)
+
+    def action_refuse(self) -> None:
+        self.dismiss(False)
 
 
 class TextualWsApp(App):
@@ -371,7 +405,48 @@ class TextualWsApp(App):
         self.exit()
 
     def action_bid(self) -> None:
-        """Placeholder until Task 6."""
+        self._start_bid([])
+
+    def _start_bid(self, args: list[str]) -> None:
+        pointer = self.ws.pointer                     # single atomic snapshot
+        if pointer.player_id is None:
+            self._flash("[yellow]No active nomination to bid on.[/yellow]")
+            return
+        player_id = pointer.player_id
+        name, _ = self.resolver.resolve(player_id)
+        match = self.lookup.get(name.lower())
+        plan = auction.evaluate_bid(
+            args, pointer.high_bid, self.state.max_bid(self.state.my_team),
+            self._adjusted(match) or None)
+
+        if isinstance(plan, auction.BidRefused):
+            self._flash(f"[red]Refused:[/red] {plan.reason}")
+            return
+        if isinstance(plan, auction.BidNeedsConfirmation):
+            def answered(confirmed: bool | None) -> None:
+                if confirmed:
+                    self._send_bid(player_id, plan.amount, name)
+                else:
+                    self._flash("Cancelled.")
+
+            self.push_screen(ConfirmBidScreen(plan.amount, name, plan.reason), answered)
+            return
+        self._send_bid(player_id, plan.amount, name)
+
+    def _send_bid(self, player_id: int, amount: int, name: str) -> None:
+        # The one deliberate fresh re-read: the nomination can move on while a
+        # confirmation modal is open, and sending then buys the wrong player.
+        if self.ws.pointer.player_id != player_id:
+            self._flash(f"[red]Refused:[/red] the nomination changed while you were "
+                        f"deciding (was {name}) -- bid not sent, press b again if you "
+                        f"still want in.")
+            return
+        try:
+            self.ws.client.send_bid(player_id, amount)
+        except RuntimeError as exc:
+            self._flash(f"[red]Not sent:[/red] {exc} -- bid in ESPN's own UI if urgent.")
+        else:
+            self._flash(f"[green]Sent bid ${amount} on {name}.[/green]")
 
     async def _reload_nominations(self) -> None:
         """Rebuild the list from data/nomination-list.txt, filtered to players
