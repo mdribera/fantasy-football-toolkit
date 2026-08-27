@@ -201,3 +201,60 @@ async def test_watchdog_alert_reaches_the_banner(tmp_path):
         await app._poll()
         await pilot.pause()
         assert app.banner.display
+
+
+@pytest.mark.asyncio
+async def test_roster_panel_tracks_budget_and_slots(tmp_path):
+    app, ws, state = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        state.record("Justin Jefferson", "WR", 52, "ME")
+        app._refresh_panels()
+        await pilot.pause()
+        assert app.roster.budget_left == 148
+        assert app.roster.spots_left == 15
+        assert ("Justin Jefferson", "WR", 52) in app.roster.roster
+        assert ("WR", 1, 2) in app.roster.slots
+        assert ("QB", 0, 2) in app.roster.slots
+
+
+@pytest.mark.asyncio
+async def test_analysis_names_the_next_equivalent_in_tier(tmp_path):
+    app, ws, _ = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        ws.feed(draft_ws.Bid(4, 3915511, 54, 25000, 12731))
+        await app._poll()
+        await pilot.pause()
+        assert "Tier 2 RB" in app.analysis.tier_line
+        assert "Kenneth Walker III" in app.analysis.tier_line
+
+
+@pytest.mark.asyncio
+async def test_analysis_verdict_reflects_the_current_high(tmp_path):
+    app, ws, _ = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        ws.feed(draft_ws.Bid(4, 3915511, 70, 25000, 12731))  # sheet $43
+        await app._poll()
+        await pilot.pause()
+        assert "overpaying" in app.analysis.verdict_line
+
+
+@pytest.mark.asyncio
+async def test_analysis_best_remaining_targets_the_neediest_position(tmp_path):
+    app, ws, state = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        ws.feed(draft_ws.Bid(4, 3915511, 44, 25000, 12731))
+        await app._poll()
+        await pilot.pause()
+        # QB is the first unfilled slot in STARTERS order and the board has none.
+        assert app._neediest_position() == "QB"
+        assert "QB" in app.analysis.best_line
+
+
+@pytest.mark.asyncio
+async def test_analysis_falls_back_to_overall_inflation(tmp_path):
+    app, ws, _ = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        ws.feed(draft_ws.Bid(4, 3915511, 44, 25000, 12731))
+        await app._poll()
+        await pilot.pause()
+        assert "overall" in app.analysis.market_line

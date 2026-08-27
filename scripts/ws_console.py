@@ -158,6 +158,7 @@ class TextualWsApp(App):
         self.status.border_title = "STATUS"
 
         self.set_interval(POLL_INTERVAL_S, self._poll)
+        self._refresh_panels()
 
     async def _poll(self) -> None:
         """Drain the websocket and push everything at the widgets.
@@ -194,7 +195,6 @@ class TextualWsApp(App):
             self._last_bid_team = ""
 
         taken = {name.lower() for name in self.state.taken()}
-        recorded = False
 
         for event in events:
             if isinstance(event, draft_ws.Nomination):
@@ -221,7 +221,6 @@ class TextualWsApp(App):
                 elif self.state.record_pick(name, position, event.price, team,
                                             espn_pick_id=event.player_id):
                     taken.add(name.lower())
-                    recorded = True
                     match = self.lookup.get(name.lower())
                     note = (f" (sheet ${match.value}, {match.value - event.price:+d})"
                             if match else "")
@@ -232,8 +231,7 @@ class TextualWsApp(App):
                             f"({event.reason})")
 
         self._sync_pointer()
-        if recorded:
-            self._refresh_panels()
+        self._refresh_panels()
 
     def _sync_pointer(self) -> None:
         """Fold the pointer into StatusPanel. The pointer, not this app, is
@@ -267,7 +265,91 @@ class TextualWsApp(App):
         self.bidlog.write(message)
 
     def _refresh_panels(self) -> None:
-        """Filled in by Task 4."""
+        self._refresh_roster()
+        self._refresh_analysis()
+
+    def _refresh_roster(self) -> None:
+        me = self.state.my_team
+        counts = self.state.position_counts(me)
+        self.roster.budget_left = self.state.budget_left(me)
+        self.roster.spots_left = self.state.spots_left(me)
+        self.roster.max_bid_amount = self.state.max_bid(me)
+        self.roster.slots = tuple(
+            (pos, counts.get(pos, 0), required)
+            for pos, required in config.STARTERS.items()
+            if pos != "FLEX"
+        )
+        self.roster.roster = tuple(
+            (p.player, p.position, p.price)
+            for p in self.state.purchases if p.team == me
+        )
+
+    def _neediest_position(self) -> str | None:
+        """First unfilled starting slot in STARTERS order, which is the order
+        'need' already iterates. Deterministic, and good enough: the panel is
+        a pointer at where your dollars have to go, not a ranking."""
+        for pos, count in self.state.needs(self.state.my_team).items():
+            if count > 0:
+                return pos
+        return None
+
+    def _refresh_analysis(self) -> None:
+        pointer = self.ws.pointer
+        if pointer.player_id is None:
+            self.analysis.tier_line = ""
+            self.analysis.market_line = ""
+            self.analysis.verdict_line = ""
+            self.analysis.best_line = ""
+            return
+
+        name, _ = self.resolver.resolve(pointer.player_id)
+        match = self.lookup.get(name.lower())
+        taken = self.state.taken()
+
+        if match:
+            equivalent = auction.next_equivalent(
+                self.vals, taken, match.position, match.tier, match.name)
+            if equivalent is None:
+                self.analysis.tier_line = (
+                    f"[bold red]Tier {match.tier} {match.position} -- nothing "
+                    f"equivalent left.[/bold red]")
+            elif equivalent.tier == match.tier:
+                self.analysis.tier_line = (
+                    f"Tier {match.tier} {match.position} -- next: "
+                    f"{equivalent.name} (${equivalent.value})")
+            else:
+                self.analysis.tier_line = (
+                    f"[yellow]Tier {match.tier} {match.position} -- last one. "
+                    f"Next tier: {equivalent.name} (${equivalent.value})[/yellow]")
+
+            by_position = self.state.inflation_by_position(self.vals)
+            if match.position in by_position:
+                rate, scope = by_position[match.position], match.position
+            else:
+                rate, scope = self.state.inflation(self.vals), "overall"
+            read = ("over sheet" if rate > 1.1 else
+                    "under sheet" if rate < 0.9 else "at sheet")
+            self.analysis.market_line = f"Market: {scope} paying x{rate:.2f} ({read})"
+
+            verdict = auction.bid_verdict(pointer.high_bid, self._adjusted(match))
+            self.analysis.verdict_line = (
+                f"Verdict: [{verdict.style}]{verdict.label}[/{verdict.style}] "
+                f"at ${pointer.high_bid}")
+        else:
+            self.analysis.tier_line = f"[dim]{name} is not on your board.[/dim]"
+            self.analysis.market_line = ""
+            self.analysis.verdict_line = ""
+
+        need = self._neediest_position()
+        pool = sorted(
+            (v for v in self.vals
+             if v.name not in taken and (need is None or v.position == need)),
+            key=lambda v: v.value, reverse=True)[:3]
+        label = f"neediest -- {need}" if need else "all starters filled"
+        self.analysis.best_line = (
+            f"Best remaining ({label}): "
+            + (", ".join(f"{v.name} {v.position} ${v.value}" for v in pool) or "none")
+        )
 
     def action_shutdown(self) -> None:
         self.exit()
