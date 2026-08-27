@@ -217,6 +217,55 @@ def evaluate_bid(args: list[str], current_high: int, my_max_bid: int,
     return BidReady(amount)
 
 
+# 0.9 and 1.1 are the same cutoffs the 'market' read uses for under/over sheet;
+# the top band is TYPO_GUARD_SHEET_MULTIPLE, where evaluate_bid already stops
+# and asks. Keeping them aligned means the panel and the guard agree.
+VERDICT_BARGAIN_RATIO = 0.9
+VERDICT_FAIR_RATIO = 1.1
+
+
+@dataclass(frozen=True)
+class Verdict:
+    label: str
+    style: str
+
+
+def bid_verdict(current_high: int, adjusted_value: int | None) -> Verdict:
+    """How the current high bid reads against the inflation-adjusted sheet."""
+    if not adjusted_value:
+        return Verdict("unpriced", "dim")
+    ratio = current_high / adjusted_value
+    if ratio < VERDICT_BARGAIN_RATIO:
+        return Verdict("good value", "green")
+    if ratio <= VERDICT_FAIR_RATIO:
+        return Verdict("fair", "dim")
+    if ratio <= TYPO_GUARD_SHEET_MULTIPLE:
+        return Verdict("pricey", "yellow")
+    return Verdict("overpaying", "red")
+
+
+def next_equivalent(vals: list["values.Valuation"], taken: set[str], position: str,
+                     tier: int, exclude_name: str | None = None) -> "values.Valuation | None":
+    """Best player still available at `position` in `tier`, or in the nearest
+    tier below it if that tier is gone.
+
+    The auction question is never whether a player is worth $34, it is whether
+    an equivalent one is still on the board if you lose the bid. Lower tier
+    number is the better tier, so filtering to `tier` or worse and then taking
+    the minimum tier present gives a same-tier answer when one exists and the
+    honest fallback when one does not.
+    """
+    pool = [v for v in vals
+            if v.position == position
+            and v.tier >= tier
+            and v.name not in taken
+            and v.name != exclude_name]
+    if not pool:
+        return None
+    best_tier = min(v.tier for v in pool)
+    return max((v for v in pool if v.tier == best_tier), key=lambda v: v.value)
+
+
 DEFAULT_JOIN_URL_FILE = Path(__file__).resolve().parents[1] / "data" / "join-url.txt"
 
 

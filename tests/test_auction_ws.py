@@ -7,7 +7,7 @@ separately in tests/test_draft_ws_client.py.
 from __future__ import annotations
 
 import auction
-from ff import draft_ws
+from ff import draft_ws, values
 
 
 def test_bid_event_sets_pointer():
@@ -116,3 +116,70 @@ def test_evaluate_bid_ready_at_exact_sheet_multiple_boundary():
     # check is in play.
     plan = auction.evaluate_bid(["30"], current_high=25, my_max_bid=100, adjusted_value=20)
     assert plan == auction.BidReady(30)
+
+
+# --- next_equivalent / bid_verdict -------------------------------------
+
+def _val(name, position, value, tier):
+    return values.Valuation(
+        name=name, position=position, pro_team="", projected_points=0.0,
+        replacement_points=0.0, vorp=0.0, value=value, tier=tier,
+    )
+
+
+BOARD = [
+    _val("Bijan Robinson", "RB", 43, 2),
+    _val("Kenneth Walker III", "RB", 38, 2),
+    _val("Tony Pollard", "RB", 22, 3),
+    _val("Justin Jefferson", "WR", 52, 1),
+]
+
+
+def test_next_equivalent_prefers_the_same_tier():
+    match = auction.next_equivalent(BOARD, set(), "RB", 2, "Bijan Robinson")
+    assert match.name == "Kenneth Walker III"
+
+
+def test_next_equivalent_falls_through_to_the_next_tier_down():
+    taken = {"Kenneth Walker III"}
+    match = auction.next_equivalent(BOARD, taken, "RB", 2, "Bijan Robinson")
+    assert match.name == "Tony Pollard"
+    assert match.tier == 3
+
+
+def test_next_equivalent_never_returns_a_better_tier():
+    match = auction.next_equivalent(BOARD, set(), "WR", 2, None)
+    assert match is None
+
+
+def test_next_equivalent_returns_none_when_the_position_is_exhausted():
+    taken = {"Kenneth Walker III", "Tony Pollard"}
+    assert auction.next_equivalent(BOARD, taken, "RB", 2, "Bijan Robinson") is None
+
+
+def test_bid_verdict_bands():
+    assert auction.bid_verdict(30, 40).label == "good value"
+    assert auction.bid_verdict(40, 40).label == "fair"
+    assert auction.bid_verdict(50, 40).label == "pricey"
+    assert auction.bid_verdict(70, 40).label == "overpaying"
+
+
+def test_bid_verdict_boundaries_match_the_market_and_typo_guard_cutoffs():
+    # 0.9 and 1.1 are the 'market' read's cutoffs; 1.5 is TYPO_GUARD_SHEET_MULTIPLE.
+    assert auction.bid_verdict(36, 40).label == "fair"        # exactly 0.9
+    assert auction.bid_verdict(44, 40).label == "fair"        # exactly 1.1
+    assert auction.bid_verdict(60, 40).label == "pricey"      # exactly 1.5
+    assert auction.bid_verdict(61, 40).label == "overpaying"
+
+
+def test_bid_verdict_without_a_sheet_value_is_neutral():
+    verdict = auction.bid_verdict(40, None)
+    assert verdict.label == "unpriced"
+    assert verdict.style == "dim"
+
+
+def test_bid_verdict_styles_run_green_to_red():
+    assert auction.bid_verdict(30, 40).style == "green"
+    assert auction.bid_verdict(40, 40).style == "dim"
+    assert auction.bid_verdict(50, 40).style == "yellow"
+    assert auction.bid_verdict(70, 40).style == "red"
