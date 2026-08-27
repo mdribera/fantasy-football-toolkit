@@ -108,12 +108,17 @@ class AnalysisPanel(Static):
 
 
 class NominationRow(ListItem):
-    """One prepared nomination. Carries the player's name so `n` can act on
-    whatever is highlighted without re-parsing the rendered label."""
+    """One prepared nomination. Carries the player's name, tier, and both
+    values so `n` can act on whatever is highlighted without re-parsing the
+    rendered label, and so callers can read the same numbers without
+    scraping rendered text."""
 
-    def __init__(self, name: str, position: str, value: str):
-        super().__init__(Label(f"{name:<26}{position:<5}{value}"))
+    def __init__(self, name: str, position: str, tier: str, value: str, adjusted: str):
+        super().__init__(Label(f"{name:<26}{position:<5}{tier:<7}{value:<7}{adjusted}"))
         self.player_name = name
+        self.tier = tier
+        self.sheet_value = value
+        self.adjusted_value = adjusted
 
 
 class NominationList(ListView):
@@ -204,7 +209,9 @@ class TextualWsApp(App):
         self.bidlog.border_title = "Bid log (this nomination)"
         self.roster.border_title = "Your roster"
         self.analysis.border_title = "Analysis"
-        self.nominations.border_title = "Nomination list (up/down to move, n to nominate)"
+        self.nominations.border_title = (
+            "Nomination list (up/down to move, n to nominate) -- "
+            "name / pos / tier / sheet / adjusted")
         self.status.border_title = "STATUS"
 
         await self._reload_nominations()
@@ -514,7 +521,9 @@ class TextualWsApp(App):
             await self.nominations.append(NominationRow(
                 name,
                 match.position if match else "?",
+                f"T{match.tier}" if match else "-",
                 f"${match.value}" if match else "-",
+                f"~${self._adjusted(match)}" if match else "-",
             ))
 
         # ListView.append() doesn't highlight anything on its own, and a

@@ -692,3 +692,30 @@ async def test_bid_watchdog_clears_when_the_bid_is_confirmed(tmp_path):
         # regardless of alert state, so check it before the block exits.
         assert not app.banner.display
     assert app._pending_bid is None
+
+
+@pytest.mark.asyncio
+async def test_nomination_rows_carry_tier_and_adjusted_value(tmp_path):
+    app, ws, _ = make_app(tmp_path)   # default list: Justin Jefferson, Kenneth Walker III
+    async with app.run_test() as pilot:
+        await app._reload_nominations()
+        await pilot.pause()
+        row = app.nominations.children[0]         # Justin Jefferson: tier 1, $52
+    assert row.player_name == "Justin Jefferson"
+    assert row.tier == "T1"
+    assert row.sheet_value == "$52"
+    assert row.adjusted_value == "~$52"            # no sales yet, inflation is 1.0
+
+
+@pytest.mark.asyncio
+async def test_nomination_row_falls_back_when_unpriced(tmp_path):
+    app, ws, _ = make_app(
+        tmp_path, nomination_list=("Justin Jefferson", "Not On The Board"))
+    async with app.run_test() as pilot:
+        await app._reload_nominations()
+        await pilot.pause()
+        row = app.nominations.children[1]
+    assert row.player_name == "Not On The Board"
+    assert row.tier == "-"
+    assert row.sheet_value == "-"
+    assert row.adjusted_value == "-"
