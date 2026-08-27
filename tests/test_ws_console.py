@@ -13,7 +13,7 @@ import pytest
 
 import auction
 import ws_console
-from ff import draft_state, draft_sync, values
+from ff import draft_state, draft_sync, draft_ws, values
 
 FIXTURE_ROWS = [
     {"name": "Bijan Robinson", "position": "RB", "pro_team": "ATL",
@@ -115,3 +115,89 @@ async def test_q_exits(tmp_path):
         await pilot.press("q")
         await pilot.pause()
     assert not app.is_running
+
+
+@pytest.mark.asyncio
+async def test_bid_updates_the_status_panel_and_log(tmp_path):
+    app, ws, _ = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        ws.feed(draft_ws.Bid(4, 3915511, 54, 25000, 12731))
+        await app._poll()
+        await pilot.pause()
+        assert "Bijan Robinson" in app.status.nominee
+        assert app.status.high_bid == 54
+        assert app.status.high_bidder == "CCT"
+
+
+@pytest.mark.asyncio
+async def test_clock_state_2_drives_the_countdown(tmp_path):
+    app, ws, _ = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        ws.feed(draft_ws.Clock(2, 6400, high_bid_team=4, player_id=3915511,
+                               high_bid_amount=54))
+        await app._poll()
+        await pilot.pause()
+        assert app.status.clock_s == 6
+
+
+@pytest.mark.asyncio
+async def test_status_shows_sheet_and_inflation_adjusted_value(tmp_path):
+    app, ws, _ = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        ws.feed(draft_ws.Bid(4, 3915511, 54, 25000, 12731))
+        await app._poll()
+        await pilot.pause()
+        assert app.status.sheet_value == 43
+        assert app.status.adjusted_value == 43   # no sales yet, inflation is 1.0
+
+
+@pytest.mark.asyncio
+async def test_sold_records_the_purchase_once(tmp_path):
+    app, ws, state = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        ws.feed(draft_ws.Sold(4, 3915511, 1, 54, 0))
+        await app._poll()
+        await pilot.pause()
+        ws.feed(draft_ws.Sold(4, 3915511, 1, 54, 0))
+        await app._poll()
+        await pilot.pause()
+    assert len(state.purchases) == 1
+    assert state.purchases[0].player == "Bijan Robinson"
+    assert state.purchases[0].price == 54
+    assert state.purchases[0].team == "CCT"
+
+
+@pytest.mark.asyncio
+async def test_sold_skips_a_pick_already_entered_by_hand(tmp_path):
+    app, ws, state = make_app(tmp_path)
+    state.record("Bijan Robinson", "RB", 54, "CCT")
+    async with app.run_test() as pilot:
+        ws.feed(draft_ws.Sold(4, 3915511, 1, 54, 0))
+        await app._poll()
+        await pilot.pause()
+    assert len(state.purchases) == 1
+
+
+@pytest.mark.asyncio
+async def test_bid_log_clears_when_the_nomination_changes(tmp_path):
+    app, ws, _ = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        ws.feed(draft_ws.Bid(4, 3915511, 54, 25000, 12731))
+        await app._poll()
+        await pilot.pause()
+        assert app.bidlog.lines
+        ws.feed(draft_ws.Bid(7, 3915514, 12, 25000, 24000))
+        await app._poll()
+        await pilot.pause()
+        # Only the new nomination's single bid survives the clear.
+        assert len(app.bidlog.lines) == 1
+
+
+@pytest.mark.asyncio
+async def test_watchdog_alert_reaches_the_banner(tmp_path):
+    app, ws, _ = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        ws.alerts.append("no frames received in 45s -- forcing reconnect")
+        await app._poll()
+        await pilot.pause()
+        assert app.banner.display

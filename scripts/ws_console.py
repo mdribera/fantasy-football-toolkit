@@ -21,7 +21,7 @@ from textual.reactive import reactive
 from textual.widgets import Footer, ListView, RichLog, Static
 
 import auction
-from ff import config, draft_state, draft_sync, values
+from ff import config, draft_state, draft_sync, draft_ws, values
 
 POLL_INTERVAL_S = 0.3  # matches the cadence of the printer thread it replaces
 
@@ -131,6 +131,7 @@ class TextualWsApp(App):
         self.nomination_names = nomination_list
         self.lookup = {v.name.lower(): v for v in vals}
         self._log_player_id: int | None = None
+        self._last_bid_team = ""
 
     def compose(self) -> ComposeResult:
         yield Banner(id="banner")
@@ -159,7 +160,114 @@ class TextualWsApp(App):
         self.set_interval(POLL_INTERVAL_S, self._poll)
 
     async def _poll(self) -> None:
-        """Placeholder until Task 3."""
+        """Drain the websocket and push everything at the widgets.
+
+        Wrapped whole: one malformed frame must never take the live display
+        down mid-auction. The banner says so loudly instead.
+        """
+        try:
+            self._drain()
+        except Exception as exc:                                  # noqa: BLE001
+            self.banner.show(
+                f"LIVE FEED ERROR: {exc!r} -- display and auto-record hit an error on one "
+                "frame and are continuing. Check ws-log-*.jsonl and your roster carefully.",
+                alert=True,
+            )
+
+    def _drain(self) -> None:
+        for alert in self.ws.drain_alerts():
+            self.banner.show(alert, alert=True)
+
+        events = self.ws.drain()
+        if not events:
+            return
+
+        # self.ws.drain() already folded every event into self.ws.pointer, so
+        # this comparison is settled before the loop below runs. Doing the
+        # reset here, rather than after the loop, matters: a Bid or Clock
+        # event for the new nomination in this same batch needs to land on
+        # top of a blank slate, not get overwritten back to it.
+        if self.ws.pointer.player_id != self._log_player_id:
+            self.bidlog.clear()
+            self._log_player_id = self.ws.pointer.player_id
+            self.status.clock_s = 0
+            self._last_bid_team = ""
+
+        taken = {name.lower() for name in self.state.taken()}
+        recorded = False
+
+        for event in events:
+            if isinstance(event, draft_ws.Nomination):
+                team = config.TEAMS.get(event.team_id, f"TEAM{event.team_id}")
+                self._flash(f"[bold]NOMINATION[/bold] {team} is on the clock")
+            elif isinstance(event, draft_ws.Bid):
+                team = config.TEAMS.get(event.team_id, f"TEAM{event.team_id}")
+                self._last_bid_team = team
+                name, _ = self.resolver.resolve(event.player_id)
+                self._flash(f"{team:<7} ${event.amount}  [dim]{name}[/dim]")
+            elif isinstance(event, draft_ws.Clock) and event.state == 2:
+                self.status.clock_s = event.remaining_ms // 1000
+                self._last_bid_team = config.TEAMS.get(event.high_bid_team, self._last_bid_team)
+                milestone = self.ws.milestone(event)
+                if milestone:
+                    self._flash(f"[yellow]{milestone}s left[/yellow], "
+                                f"high bid ${event.high_bid_amount}")
+            elif isinstance(event, draft_ws.Sold):
+                team = config.TEAMS.get(event.team_id, f"TEAM{event.team_id}")
+                name, position = self.resolver.resolve(event.player_id)
+                if name.lower() in taken:
+                    self._flash(f"[dim]SOLD {name} already recorded by hand, "
+                                f"skipping duplicate.[/dim]")
+                elif self.state.record_pick(name, position, event.price, team,
+                                            espn_pick_id=event.player_id):
+                    taken.add(name.lower())
+                    recorded = True
+                    match = self.lookup.get(name.lower())
+                    note = (f" (sheet ${match.value}, {match.value - event.price:+d})"
+                            if match else "")
+                    self._flash(f"[green]SOLD[/green] {name} ${event.price} "
+                                f"-> {team}{note}")
+            elif isinstance(event, draft_ws.WsError):
+                self._flash(f"[yellow]unparsed frame:[/yellow] {event.raw!r} "
+                            f"({event.reason})")
+
+        self._sync_pointer()
+        if recorded:
+            self._refresh_panels()
+
+    def _sync_pointer(self) -> None:
+        """Fold the pointer into StatusPanel. The pointer, not this app, is
+        the single source of truth for what is happening right now."""
+        pointer = self.ws.pointer
+        if pointer.player_id is None:
+            self.status.nominee = ""
+            self.status.high_bid = 0
+            self.status.high_bidder = ""
+            return
+
+        name, position = self.resolver.resolve(pointer.player_id)
+        match = self.lookup.get(name.lower())
+        team = f" ({position}" + (f", {match.pro_team})" if match and match.pro_team else ")")
+        self.status.nominee = f"{name}{team}"
+        self.status.high_bid = pointer.high_bid
+        self.status.high_bidder = self._high_bidder_label()
+        self.status.sheet_value = match.value if match else 0
+        self.status.adjusted_value = self._adjusted(match)
+        self.status.max_bid_amount = self.state.max_bid(self.state.my_team)
+
+    def _high_bidder_label(self) -> str:
+        return self._last_bid_team
+
+    def _adjusted(self, match: values.Valuation | None) -> int:
+        if not match:
+            return 0
+        return max(1, round(match.value * self.state.inflation(self.vals)))
+
+    def _flash(self, message: str) -> None:
+        self.bidlog.write(message)
+
+    def _refresh_panels(self) -> None:
+        """Filled in by Task 4."""
 
     def action_shutdown(self) -> None:
         self.exit()
