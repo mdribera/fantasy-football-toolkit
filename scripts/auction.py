@@ -21,6 +21,7 @@ State persists to data/draft-state.json, so a crashed terminal loses nothing.
 """
 
 import argparse
+import contextlib
 import json
 import sys
 import threading
@@ -30,6 +31,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+from prompt_toolkit import PromptSession
+from prompt_toolkit.patch_stdout import patch_stdout
 from rich.console import Console
 from rich.table import Table
 
@@ -285,6 +288,17 @@ def _drain_ws(ws: WsController, state: draft_state.DraftState,
             console.print(f"[yellow]unparsed frame:[/yellow] {event.raw!r} ({event.reason})")
 
 
+def _ws_printer_loop(ws: WsController, state: draft_state.DraftState,
+                      resolver: draft_sync.PlayerResolver, vals: list["values.Valuation"],
+                      nomination_list: list[str], stop: threading.Event) -> None:
+    """Prints live websocket events on their own cadence instead of only
+    between prompts, so Mark sees BID/CLOCK updates while typing a
+    response. Safe to print from this thread because main() wraps the
+    whole session in patch_stdout()."""
+    while not stop.wait(0.3):
+        _drain_ws(ws, state, resolver, vals, nomination_list)
+
+
 def show_nomination_list(state: draft_state.DraftState, vals: list["values.Valuation"],
                           names: list[str]) -> None:
     console.print("[dim]Nomination list not wired up yet.[/dim]")
@@ -453,90 +467,101 @@ def main() -> int:
                   f"${config.SALARY_CAP} cap, {config.ROSTER_SIZE} spots, {sync_note}. "
                   f"{len(state.purchases)} purchases loaded. Type 'quit' to exit.\n")
 
-    while True:
-        if sync:
-            _drain_sync(sync, state, vals)
-        elif ws:
-            _drain_ws(ws, state, resolver, vals, nomination_list)
-        try:
-            line = console.input("[bold cyan]>[/bold cyan] ").strip()
-        except (EOFError, KeyboardInterrupt):
-            break
-        if not line:
-            continue
+    session = PromptSession() if ws else None
+    stop_printer = threading.Event()
+    printer_thread: threading.Thread | None = None
+    if ws:
+        printer_thread = threading.Thread(
+            target=_ws_printer_loop, args=(ws, state, resolver, vals, nomination_list, stop_printer),
+            daemon=True)
 
-        cmd = line.split()
-        head = cmd[0].lower()
-
-        if head in ("quit", "exit", "q"):
-            break
-        if head == "me":
-            show_me(state, vals)
-        elif head == "teams":
-            show_teams(state)
-        elif head == "sync":
+    with patch_stdout() if ws else contextlib.nullcontext():
+        if printer_thread:
+            printer_thread.start()
+        while True:
             if sync:
-                sync.wake()
-                time.sleep(0.5)
                 _drain_sync(sync, state, vals)
-            elif ws:
-                console.print("[dim]Live websocket -- nothing to force-sync.[/dim]")
-            else:
-                console.print("[yellow]Sync disabled (--no-sync).[/yellow]")
-        elif head == "market":
-            table = Table(title=f"Market vs sheet -- overall x{state.inflation(vals):.2f}")
-            table.add_column("Pos")
-            table.add_column("Paying", justify="right")
-            table.add_column("Read")
-            for pos, rate in sorted(state.inflation_by_position(vals).items(),
-                                    key=lambda kv: kv[1], reverse=True):
-                if rate > 1.1:
-                    read = "[red]over sheet -- let these go[/red]"
-                elif rate < 0.9:
-                    read = "[green]under sheet -- buy here[/green]"
+            try:
+                line = (session.prompt("> ") if session else
+                        console.input("[bold cyan]>[/bold cyan] ")).strip()
+            except (EOFError, KeyboardInterrupt):
+                break
+            if not line:
+                continue
+
+            cmd = line.split()
+            head = cmd[0].lower()
+
+            if head in ("quit", "exit", "q"):
+                break
+            if head == "me":
+                show_me(state, vals)
+            elif head == "teams":
+                show_teams(state)
+            elif head == "sync":
+                if sync:
+                    sync.wake()
+                    time.sleep(0.5)
+                    _drain_sync(sync, state, vals)
+                elif ws:
+                    console.print("[dim]Live websocket -- nothing to force-sync.[/dim]")
                 else:
-                    read = "[dim]at sheet[/dim]"
-                table.add_row(pos, f"x{rate:.2f}", read)
-            console.print(table)
-            console.print(f"Other teams still hold [bold]"
-                          f"${state.dollars_remaining_in_room()}[/bold] combined.")
-        elif head == "undo":
-            removed = state.undo()
-            console.print(f"Removed: {removed}" if removed else "Nothing to undo.")
-        elif head == "need":
-            for pos, count in state.needs(state.my_team).items():
-                if count > 0:
-                    show_best(state, vals, pos, limit=6)
-        elif head == "best":
-            pos = cmd[1] if len(cmd) > 1 and not cmd[1].isdigit() else None
-            n = next((int(c) for c in cmd[1:] if c.isdigit()), 15)
-            show_best(state, vals, pos, n)
-        elif len(cmd) >= 3 and cmd[-2].lstrip("$").isdigit():
-            team = cmd[-1]
-            price = int(cmd[-2].lstrip("$"))
-            name = " ".join(cmd[:-2])
-            match = lookup.get(name.lower())
-            if not match:
-                candidates = [v for k, v in lookup.items() if name.lower() in k]
-                if len(candidates) == 1:
-                    match = candidates[0]
-                elif candidates:
-                    console.print("Ambiguous: " + ", ".join(c.name for c in candidates[:8]))
-                    continue
-            position = match.position if match else "?"
-            canonical = draft_state.normalize_team(team)
-            if canonical not in state.all_teams() and len(state.purchases) > 3:
-                console.print(f"[yellow]New team label '{canonical}'.[/yellow] "
-                              "Typo? 'undo' reverses it.")
-            state.record(match.name if match else name, position, price, team)
-            note = ""
-            if match:
-                delta = match.value - price
-                note = f" (sheet ${match.value}, {delta:+d})"
-            console.print(f"Recorded: {name} ${price} -> {team}{note}")
-        else:
-            console.print("[yellow]Unrecognized.[/yellow] "
-                          "Use: '<player> <price> <team>' or me/best/need/teams/market/undo/quit")
+                    console.print("[yellow]Sync disabled (--no-sync).[/yellow]")
+            elif head == "market":
+                table = Table(title=f"Market vs sheet -- overall x{state.inflation(vals):.2f}")
+                table.add_column("Pos")
+                table.add_column("Paying", justify="right")
+                table.add_column("Read")
+                for pos, rate in sorted(state.inflation_by_position(vals).items(),
+                                        key=lambda kv: kv[1], reverse=True):
+                    if rate > 1.1:
+                        read = "[red]over sheet -- let these go[/red]"
+                    elif rate < 0.9:
+                        read = "[green]under sheet -- buy here[/green]"
+                    else:
+                        read = "[dim]at sheet[/dim]"
+                    table.add_row(pos, f"x{rate:.2f}", read)
+                console.print(table)
+                console.print(f"Other teams still hold [bold]"
+                              f"${state.dollars_remaining_in_room()}[/bold] combined.")
+            elif head == "undo":
+                removed = state.undo()
+                console.print(f"Removed: {removed}" if removed else "Nothing to undo.")
+            elif head == "need":
+                for pos, count in state.needs(state.my_team).items():
+                    if count > 0:
+                        show_best(state, vals, pos, limit=6)
+            elif head == "best":
+                pos = cmd[1] if len(cmd) > 1 and not cmd[1].isdigit() else None
+                n = next((int(c) for c in cmd[1:] if c.isdigit()), 15)
+                show_best(state, vals, pos, n)
+            elif len(cmd) >= 3 and cmd[-2].lstrip("$").isdigit():
+                team = cmd[-1]
+                price = int(cmd[-2].lstrip("$"))
+                name = " ".join(cmd[:-2])
+                match = lookup.get(name.lower())
+                if not match:
+                    candidates = [v for k, v in lookup.items() if name.lower() in k]
+                    if len(candidates) == 1:
+                        match = candidates[0]
+                    elif candidates:
+                        console.print("Ambiguous: " + ", ".join(c.name for c in candidates[:8]))
+                        continue
+                position = match.position if match else "?"
+                canonical = draft_state.normalize_team(team)
+                if canonical not in state.all_teams() and len(state.purchases) > 3:
+                    console.print(f"[yellow]New team label '{canonical}'.[/yellow] "
+                                  "Typo? 'undo' reverses it.")
+                state.record(match.name if match else name, position, price, team)
+                note = ""
+                if match:
+                    delta = match.value - price
+                    note = f" (sheet ${match.value}, {delta:+d})"
+                console.print(f"Recorded: {name} ${price} -> {team}{note}")
+            else:
+                console.print("[yellow]Unrecognized.[/yellow] "
+                              "Use: '<player> <price> <team>' or me/best/need/teams/market/undo/quit")
+        stop_printer.set()
 
     if ws:
         ws.client.stop()
