@@ -22,7 +22,9 @@ State persists to data/draft-state.json, so a crashed terminal loses nothing.
 
 import argparse
 import contextlib
+import http.server
 import json
+import queue
 import sys
 import threading
 import time
@@ -253,6 +255,54 @@ class WsController:
         return clock_milestone(event.remaining_ms, self._announced)
 
 
+class _MirrorRequestHandler(http.server.BaseHTTPRequestHandler):
+    def do_POST(self) -> None:
+        length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(length)
+        try:
+            payload = json.loads(body)
+        except ValueError:
+            self.send_response(400)
+            self.end_headers()
+            return
+        self.server.mirror_queue.put(payload)  # type: ignore[attr-defined]
+        self.send_response(204)
+        self.end_headers()
+
+    def log_message(self, format: str, *args) -> None:
+        pass  # quiet -- the console already prints what matters
+
+
+class MirrorController:
+    """Listens for POSTs from the browser-side mirror snippet (Workstream 4
+    fallback) and hands raw {raw, price} payloads to the main loop, the
+    same drain-before-prompt shape as SyncController and WsController.
+    Deliberately does not try to parse a player/team out of the raw DOM
+    text -- ESPN's on-screen labels won't reliably match config.TEAMS, so
+    this is a nudge for manual entry, not an auto-importer."""
+
+    def __init__(self, port: int = 8765):
+        self.queue: "queue.Queue[dict]" = queue.Queue()
+        self._server = http.server.HTTPServer(("127.0.0.1", port), _MirrorRequestHandler)
+        self._server.mirror_queue = self.queue  # type: ignore[attr-defined]
+        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def drain(self) -> list[dict]:
+        picks = []
+        while True:
+            try:
+                picks.append(self.queue.get_nowait())
+            except queue.Empty:
+                break
+        return picks
+
+    def stop(self) -> None:
+        self._server.shutdown()
+
+
 def _drain_ws(ws: WsController, state: draft_state.DraftState,
               resolver: draft_sync.PlayerResolver, vals: list["values.Valuation"],
               nomination_list: list[str]) -> None:
@@ -444,13 +494,19 @@ def main() -> int:
                         help="use the live draft-room websocket instead of polling mDraftDetail")
     parser.add_argument("--join-url-file", type=Path, default=DEFAULT_JOIN_URL_FILE,
                         help=f"file holding the pasted JOIN URL for --ws (default: {DEFAULT_JOIN_URL_FILE})")
+    parser.add_argument("--mirror", action="store_true",
+                        help="fallback: listen for the browser mirror snippet instead of --ws")
+    parser.add_argument("--mirror-port", type=int, default=8765,
+                        help="local port the mirror snippet POSTs to (default 8765)")
     parser.add_argument("--my-team", help="team label to use for 'me'/'need'")
     parser.add_argument("--league-id", help="override ESPN_LEAGUE_ID (e.g. a practice draft)")
     parser.add_argument("--team-id", help="override ESPN_TEAM_ID")
     args = parser.parse_args()
 
-    if args.ws and (args.no_sync or args.replay):
-        parser.error("--ws replaces the REST sync path; drop --no-sync/--replay")
+    if (args.ws or args.mirror) and (args.no_sync or args.replay):
+        parser.error("--ws/--mirror replace the REST sync path; drop --no-sync/--replay")
+    if args.ws and args.mirror:
+        parser.error("--ws and --mirror are alternatives; pick one")
 
     vals = load_values()
     state = draft_state.DraftState.load()
@@ -467,12 +523,16 @@ def main() -> int:
     resolver = draft_sync.PlayerResolver(VALUES_PATH)
     sync: SyncController | None = None
     ws: WsController | None = None
+    mirror: MirrorController | None = None
     nomination_list = load_nomination_list(NOMINATION_LIST_PATH)
 
     if args.ws:
         join_url = load_join_url(args.join_url_file)
         ws = WsController(join_url, cred)
         ws.start()
+    elif args.mirror:
+        mirror = MirrorController(args.mirror_port)
+        mirror.start()
     elif not args.no_sync:
         if args.replay:
             source = _replay_source(Path(args.replay))
@@ -505,6 +565,10 @@ def main() -> int:
         while True:
             if sync:
                 _drain_sync(sync, state, vals)
+            elif mirror:
+                for pick in mirror.drain():
+                    console.print(f"[bold magenta][mirror][/bold magenta] detected ${pick.get('price')}: "
+                                  f"{pick.get('raw')} -- enter manually if this is a real sale.")
             try:
                 line = (session.prompt("> ") if session else
                         console.input("[bold cyan]>[/bold cyan] ")).strip()
