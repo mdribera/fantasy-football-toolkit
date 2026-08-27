@@ -16,10 +16,16 @@ from __future__ import annotations
 
 import json
 import re
+import threading
+import time
 import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
+
+import websocket
+
+from . import config
 
 
 @dataclass(frozen=True)
@@ -328,6 +334,166 @@ def parse_join_url(url: str) -> tuple[str, str]:
     except (KeyError, IndexError) as exc:
         raise ValueError(f"Could not find leagueId/teamId in the join URL: {exc}") from exc
     return league_id, team_id
+
+
+# --- live client ----------------------------------------------------------
+
+
+class DraftRoomClient:
+    """Background-threaded websocket connection to the live draft room, in
+    the same shape as scripts/auction.py's SyncController: a thread that
+    only ever reads (plus the automated PING keepalive) and pushes parsed
+    events onto a queue, with the main loop the sole consumer -- so there's
+    no race with the console's own reads.
+
+    Reconnects on its own, with the same token, if frames stop arriving
+    (the watchdog) rather than trusting websocket-client to notice an
+    unexpected server-side close -- confirmed necessary by the 2026-08-26
+    live rehearsal, see docs/draft-ws-plan.md. `alerts` collects messages
+    the console should surface loudly (reconnects, unparsed frames, send
+    failures) rather than log quietly.
+
+    Nothing is ever sent automatically except PING. `send_bid` and
+    `send_nomination` only fire when the console calls them, which only
+    happens on Mark's own typed command -- that's the confirmation.
+    """
+
+    PING_INTERVAL_S = 15  # confirmed cadence from a HAR capture
+    # No real timeout example exists past 65s of total silence (the LEFT
+    # rehearsal). This is well short of that with a wide margin for the
+    # normal 1s-ish CLOCK cadence, so a stall is caught long before ESPN
+    # would otherwise drop the connection.
+    LIVENESS_TIMEOUT_S = 45
+    RECONNECT_BACKOFF_S = 3
+
+    def __init__(self, join_url: str, cred: config.EspnCredentials, log_path: Path | None = None):
+        self.join_url = join_url
+        self.cred = cred
+        self.league_id, self.team_id = parse_join_url(join_url)
+        self.log_path = log_path or Path(__file__).resolve().parents[2] / "data" / \
+            f"ws-log-{int(time.time())}.jsonl"
+        self.connected = False
+        self.reconnect_count = 0
+        self.alerts: list[str] = []
+
+        self._ws: websocket.WebSocketApp | None = None
+        self._queue: list[Event] = []
+        self._alert_lock = threading.Lock()
+        self._queue_lock = threading.Lock()
+        self._stop = threading.Event()
+        self._last_frame_at = time.monotonic()
+        self._fh = self.log_path.open("a")
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._ws is not None:
+            self._ws.close()
+        self._fh.close()
+
+    def drain(self) -> list[Event]:
+        with self._queue_lock:
+            events, self._queue = self._queue, []
+        return events
+
+    def drain_alerts(self) -> list[str]:
+        with self._alert_lock:
+            alerts, self.alerts = self.alerts, []
+        return alerts
+
+    def send_bid(self, player_id: int, amount: int) -> None:
+        self._send(f"BID {player_id} {amount}\n")
+
+    def send_nomination(self, player_id: int, opening_bid: int) -> None:
+        self._send(f"NOMINATE {player_id} {opening_bid}\n")
+
+    def _send(self, frame: str) -> None:
+        if self._ws is None or not self.connected:
+            raise RuntimeError("not connected to the draft room")
+        self._ws.send(frame)
+        self._log("send", frame)
+
+    def _alert(self, message: str) -> None:
+        with self._alert_lock:
+            self.alerts.append(message)
+
+    def _log(self, direction: str, msg: str) -> None:
+        self._fh.write(json.dumps({"ts": time.time(), "dir": direction, "msg": redact_token(msg)}) + "\n")
+        self._fh.flush()
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            self._connect_once()
+            if self._stop.is_set():
+                break
+            self.reconnect_count += 1
+            self._alert(f"disconnected from the draft room -- reconnecting (attempt {self.reconnect_count})")
+            time.sleep(self.RECONNECT_BACKOFF_S)
+
+    def _connect_once(self) -> None:
+        stop_helpers = threading.Event()
+        self._last_frame_at = time.monotonic()
+
+        def on_message(ws, message):
+            self._last_frame_at = time.monotonic()
+            self._log("receive", message)
+            event = parse_frame(message)
+            if isinstance(event, WsError):
+                self._alert(f"unparsed frame: {event.raw!r} ({event.reason})")
+            with self._queue_lock:
+                self._queue.append(event)
+
+        def on_open(ws):
+            self.connected = True
+            threading.Thread(target=self._ping_loop, args=(ws, stop_helpers), daemon=True).start()
+            threading.Thread(target=self._watchdog, args=(ws, stop_helpers), daemon=True).start()
+
+        def on_error(ws, error):
+            self._alert(f"websocket error: {error}")
+
+        def on_close(ws, code, msg):
+            self.connected = False
+            stop_helpers.set()
+
+        self._ws = websocket.WebSocketApp(
+            self.join_url,
+            cookie=f"espn_s2={self.cred.espn_s2}; SWID={self.cred.swid}",
+            header=[
+                "Origin: https://fantasy.espn.com",
+                f"Referer: https://fantasy.espn.com/football/draft?leagueId={self.league_id}",
+                "User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+            ],
+            on_message=on_message,
+            on_open=on_open,
+            on_error=on_error,
+            on_close=on_close,
+        )
+        self._ws.run_forever()
+        stop_helpers.set()
+
+    def _ping_loop(self, ws: websocket.WebSocketApp, stop_helpers: threading.Event) -> None:
+        while not stop_helpers.wait(self.PING_INTERVAL_S):
+            # Every sent frame in the HAR capture is newline-terminated, PING
+            # included -- omitting it means the server never sends a PONG
+            # back (confirmed live, see docs/draft-ws-plan.md).
+            frame = f"PING PING%20{int(time.time() * 1000)}\n"
+            try:
+                ws.send(frame)
+            except Exception as exc:
+                self._alert(f"ping send failed: {exc}")
+                return
+            self._log("send", frame)
+
+    def _watchdog(self, ws: websocket.WebSocketApp, stop_helpers: threading.Event) -> None:
+        while not stop_helpers.wait(5):
+            if time.monotonic() - self._last_frame_at > self.LIVENESS_TIMEOUT_S:
+                self._alert(f"no frames received in {self.LIVENESS_TIMEOUT_S}s -- forcing reconnect")
+                ws.close()
+                return
 
 
 def iter_frames(path: Path, include_sent: bool = False) -> Iterator[str]:
