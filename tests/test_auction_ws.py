@@ -209,3 +209,22 @@ def test_load_state_not_fresh_loads_existing_data(tmp_path):
     ).save()
     state = auction.load_state(fresh=False, path=path)
     assert state.purchases[0].player == "Lamar Jackson"
+
+
+def test_load_state_fresh_backs_up_the_existing_file(tmp_path):
+    path = tmp_path / "draft-state.json"
+    draft_state.DraftState(
+        purchases=[draft_state.Purchase("Lamar Jackson", "QB", 62, "FWD")],
+        state_path=path,
+    ).save()
+    auction.load_state(fresh=True, path=path)
+    backup = path.with_suffix(".json.bak")
+    assert backup.exists()
+    assert "Lamar Jackson" in backup.read_text()
+
+
+def test_load_state_fresh_without_an_existing_file_does_not_create_a_backup(tmp_path):
+    path = tmp_path / "draft-state.json"
+    auction.load_state(fresh=True, path=path)
+    backup = path.with_suffix(".json.bak")
+    assert not backup.exists()

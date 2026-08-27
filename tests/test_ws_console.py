@@ -63,11 +63,14 @@ class FakeWsController:
         self.alerts: list[str] = []
         self._pending: list = []
         self._announced: set[int] = set()
+        self.fail_with: Exception | None = None
 
     def feed(self, *events) -> None:
         self._pending.extend(events)
 
     def drain(self) -> list:
+        if self.fail_with:
+            raise self.fail_with
         events, self._pending = self._pending, []
         for event in events:
             updated = auction.apply_ws_event(self.pointer, event)
@@ -620,6 +623,26 @@ async def test_b_drains_pending_events_before_evaluating_the_bid(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_b_shows_the_banner_and_does_not_crash_when_the_drain_raises(tmp_path):
+    """_start_bid's own drain call must go through the same crash guard as
+    the poll timer's -- a malformed frame on a bid keypress must show the
+    LIVE FEED ERROR banner, not take the whole app down. No nomination was
+    ever successfully drained, so the pointer stays empty and 'b' has
+    nothing to bid on either."""
+    app, ws, _ = make_app(tmp_path)
+    ws.fail_with = RuntimeError("boom")
+    async with app.run_test() as pilot:
+        await pilot.press("b")
+        await pilot.pause()
+        assert app.is_running
+        assert app.banner.display
+        assert app.banner.has_class("alert")
+        assert "LIVE FEED ERROR" in str(app.banner.content)
+        assert any("LIVE FEED ERROR" in str(line) for line in app.bidlog.lines)
+    assert ws.client.sent == []
+
+
+@pytest.mark.asyncio
 async def test_sold_flags_a_mismatched_duplicate_loudly(tmp_path):
     """A stale record from an unrelated earlier practice draft, for the same
     real player, must not be mistaken for a harmless by-hand duplicate."""
@@ -673,6 +696,66 @@ async def test_bid_watchdog_alerts_when_a_sent_bid_never_gets_confirmed(tmp_path
         # A second check with nothing pending must not write another alert.
         app._check_bid_watchdog()
         assert len(app.bidlog.lines) == lines_after_alert
+    assert any("unconfirmed" in str(line) for line in app.bidlog.lines)
+
+
+@pytest.mark.asyncio
+async def test_self_bid_guard_holds_when_my_team_label_diverges_from_config(tmp_path):
+    """config.TEAMS[config.MY_TEAM_ID] is 'ME', but state.my_team can be
+    overridden (--my-team, or a persisted value) to something else. The
+    self-bid guard has to key off ESPN team id, not the label, or it
+    silently stops refusing self-bids the moment the two diverge."""
+    app, ws, state = make_app(tmp_path)
+    state.my_team = "QBK"
+    async with app.run_test() as pilot:
+        ws.feed(draft_ws.Bid(6, 3915511, 40, 25000, 12731))    # team 6 is us
+        await app._poll()
+        await pilot.pause()
+        await pilot.press("b")
+        await pilot.pause()
+    assert ws.client.sent == []
+    assert any("already hold" in str(line) for line in app.bidlog.lines)
+
+
+@pytest.mark.asyncio
+async def test_watchdog_confirms_a_bid_when_my_team_label_diverges_from_config(tmp_path):
+    """Same divergence as above, but for the watchdog's confirm check: it
+    must still recognize a bid confirmed under team id 6 as ours even when
+    state.my_team isn't 'ME'."""
+    app, ws, state = make_app(tmp_path)
+    state.my_team = "QBK"
+    async with app.run_test() as pilot:
+        ws.feed(draft_ws.Bid(4, 3915511, 40, 25000, 12731))
+        await app._poll()
+        await pilot.pause()
+        await pilot.press("b")                          # sends BID 3915511 41
+        await pilot.pause()
+        ws.feed(draft_ws.Bid(6, 3915511, 41, 25000, 12000))   # server confirms it: team 6 is us
+        await app._poll()
+        await pilot.pause()
+        assert not app.banner.display
+    assert app._pending_bid is None
+
+
+@pytest.mark.asyncio
+async def test_bid_watchdog_fires_on_total_socket_silence(tmp_path):
+    """The watchdog check has to run every poll tick regardless of whether
+    _drain() produced any events -- a silent socket (nothing arriving at
+    all) is exactly the case it exists to catch, not just a busy one."""
+    app, ws, _ = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        ws.feed(draft_ws.Bid(4, 3915511, 40, 25000, 12731))
+        await app._poll()
+        await pilot.pause()
+        await pilot.press("b")                          # sends BID 3915511 41
+        await pilot.pause()
+        assert app._pending_bid is not None
+        player_id, amount, sent_at = app._pending_bid
+        app._pending_bid = (player_id, amount, sent_at - 100)  # backdate
+        # No new events fed at all -- the queue stays empty.
+        await app._poll()
+        await pilot.pause()
+        assert app.banner.display
     assert any("unconfirmed" in str(line) for line in app.bidlog.lines)
 
 

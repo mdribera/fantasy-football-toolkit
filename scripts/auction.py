@@ -379,9 +379,13 @@ def load_state(fresh: bool, path: Path = draft_state.STATE_PATH) -> draft_state.
     player's permanent id, not scoped to one draft. --fresh sidesteps that by
     skipping the load entirely; the first save() after this still writes to
     the same path, so a --fresh run replaces the file's contents once
-    anything gets recorded.
+    anything gets recorded. Whatever was already there gets backed up first,
+    so --fresh never permanently destroys a real session's data.
     """
     if fresh:
+        if path.exists():
+            backup = path.with_suffix(path.suffix + ".bak")
+            backup.write_text(path.read_text())
         return draft_state.DraftState(state_path=path)
     return draft_state.DraftState.load(path)
 

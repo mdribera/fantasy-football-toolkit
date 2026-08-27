@@ -184,6 +184,7 @@ class TextualWsApp(App):
         self.lookup = {v.name.lower(): v for v in vals}
         self._log_player_id: int | None = None
         self._last_bid_team = ""
+        self._last_bid_team_id: int | None = None
         self._pending_bid: tuple[int, int, float] | None = None
 
     def compose(self) -> ComposeResult:
@@ -219,10 +220,19 @@ class TextualWsApp(App):
         self.set_interval(POLL_INTERVAL_S, self._poll)
 
     async def _poll(self) -> None:
-        """Drain the websocket and push everything at the widgets.
+        """Drain the websocket and check the bid watchdog every tick,
+        regardless of whether any frames arrived this tick -- a silent
+        socket is exactly the case the watchdog exists to catch, not just
+        a busy one.
+        """
+        self._guarded_drain()
+        self._check_bid_watchdog()
 
-        Wrapped whole: one malformed frame must never take the live display
-        down mid-auction. The banner says so loudly instead.
+    def _guarded_drain(self) -> None:
+        """Wrapped whole: one malformed frame must never take the live
+        display down mid-auction, whether triggered by the poll timer or
+        by a bid keypress that drains proactively. The banner says so
+        loudly instead.
         """
         try:
             self._drain()
@@ -252,6 +262,7 @@ class TextualWsApp(App):
             self._log_player_id = self.ws.pointer.player_id
             self.status.clock_s = 0
             self._last_bid_team = ""
+            self._last_bid_team_id = None
 
         taken = {name.lower() for name in self.state.taken()}
 
@@ -266,11 +277,13 @@ class TextualWsApp(App):
             elif isinstance(event, draft_ws.Bid):
                 team = config.TEAMS.get(event.team_id, f"TEAM{event.team_id}")
                 self._last_bid_team = team
+                self._last_bid_team_id = event.team_id
                 name, _ = self.resolver.resolve(event.player_id)
                 self._flash(f"{team:<7} ${event.amount}  [dim]{name}[/dim]")
             elif isinstance(event, draft_ws.Clock) and event.state == 2:
                 self.status.clock_s = event.remaining_ms // 1000
                 self._last_bid_team = config.TEAMS.get(event.high_bid_team, self._last_bid_team)
+                self._last_bid_team_id = event.high_bid_team
                 milestone = self.ws.milestone(event)
                 if milestone:
                     self._flash(f"[yellow]{milestone}s left[/yellow], "
@@ -309,7 +322,6 @@ class TextualWsApp(App):
 
         self._sync_pointer()
         self._refresh_panels()
-        self._check_bid_watchdog()
 
     def _check_bid_watchdog(self) -> None:
         if self._pending_bid is None:
@@ -319,15 +331,15 @@ class TextualWsApp(App):
         if pointer.player_id != player_id:
             self._pending_bid = None                    # nomination moved on either way
             return
-        if pointer.high_bid == amount and self._last_bid_team == self.state.my_team:
+        if pointer.high_bid >= amount and self._i_hold_the_high():
             self._pending_bid = None                     # confirmed: our bid landed
             return
         if time.monotonic() - sent_at > self.BID_WATCHDOG_TIMEOUT_S:
             name, _ = self.resolver.resolve(player_id)
+            elapsed = time.monotonic() - sent_at
             message = (
-                f"Bid ${amount} on {name} was sent {self.BID_WATCHDOG_TIMEOUT_S:.0f}s "
-                "ago but the server hasn't confirmed it as the high bid -- check "
-                "ESPN's own UI directly.")
+                f"Bid ${amount} on {name} was sent {elapsed:.0f}s ago but the server "
+                "hasn't confirmed it as the high bid -- check ESPN's own UI directly.")
             self.banner.show(message, alert=True)
             self._flash(f"[red]{message} (unconfirmed)[/red]")
             self._pending_bid = None                     # alert once, don't spam every poll
@@ -354,6 +366,14 @@ class TextualWsApp(App):
 
     def _high_bidder_label(self) -> str:
         return self._last_bid_team
+
+    def _i_hold_the_high(self) -> bool:
+        """Whether the most recent bid on the active nomination is ours, by
+        ESPN team id rather than the display label -- state.my_team can
+        diverge from config.TEAMS[config.MY_TEAM_ID] (e.g. --my-team), and
+        comparing labels silently breaks both the self-bid guard and the
+        bid watchdog."""
+        return self._last_bid_team_id == config.MY_TEAM_ID
 
     def _adjusted(self, match: values.Valuation | None) -> int:
         if not match:
@@ -457,7 +477,7 @@ class TextualWsApp(App):
         self._start_bid([])
 
     def _start_bid(self, args: list[str]) -> None:
-        self._drain()                                 # fold in anything already arrived
+        self._guarded_drain()                         # fold in anything already arrived, crash-safe
         pointer = self.ws.pointer                     # single atomic snapshot
         if pointer.player_id is None:
             self._flash("[yellow]No active nomination to bid on.[/yellow]")
@@ -468,7 +488,7 @@ class TextualWsApp(App):
         plan = auction.evaluate_bid(
             args, pointer.high_bid, self.state.max_bid(self.state.my_team),
             self._adjusted(match) or None,
-            already_high=(self._last_bid_team == self.state.my_team))
+            already_high=self._i_hold_the_high())
 
         if isinstance(plan, auction.BidRefused):
             self._flash(f"[red]Refused:[/red] {plan.reason}")
