@@ -140,6 +140,8 @@ def apply_ws_event(pointer: WsAuctionPointer, event: draft_ws.Event) -> WsAuctio
     """Fold one parsed websocket event into the current auction pointer."""
     if isinstance(event, draft_ws.Bid):
         return WsAuctionPointer(event.player_id, event.amount, pointer.nominating_team)
+    if isinstance(event, draft_ws.Nomination):
+        return WsAuctionPointer(None, 0, event.team_id)
     if isinstance(event, draft_ws.Clock):
         if event.state == 2:
             return WsAuctionPointer(event.player_id, event.high_bid_amount, pointer.nominating_team)
@@ -309,9 +311,10 @@ def _drain_ws(ws: WsController, state: draft_state.DraftState,
     """Print live websocket events and record completed sales, mirroring
     _drain_sync's shape for the REST feed."""
     for alert in ws.drain_alerts():
-        console.print(f"[bold red]{alert}[/bold red]")
+        console.print(alert, style="bold red", markup=False)
 
     lookup = {v.name: v for v in vals}
+    existing = {p.player.lower() for p in state.purchases}
     for event in ws.drain():
         if isinstance(event, draft_ws.Nomination):
             team = config.TEAMS.get(event.team_id, f"TEAM{event.team_id}")
@@ -330,12 +333,15 @@ def _drain_ws(ws: WsController, state: draft_state.DraftState,
         elif isinstance(event, draft_ws.Sold):
             team = config.TEAMS.get(event.team_id, f"TEAM{event.team_id}")
             name, position = resolver.resolve(event.player_id)
-            if state.record_pick(name, position, event.price, team, espn_pick_id=event.player_id):
+            if name.lower() in existing:
+                console.print(f"[dim]SOLD[/dim] {name} already recorded by hand -- skipping duplicate.")
+            elif state.record_pick(name, position, event.price, team, espn_pick_id=event.player_id):
+                existing.add(name.lower())
                 match = lookup.get(name)
                 note = f" (sheet ${match.value}, {match.value - event.price:+d})" if match else ""
                 console.print(f"[green]SOLD[/green] {name} ${event.price} -> {team}{note}")
         elif isinstance(event, draft_ws.WsError):
-            console.print(f"[yellow]unparsed frame:[/yellow] {event.raw!r} ({event.reason})")
+            console.print(f"unparsed frame: {event.raw!r} ({event.reason})", style="yellow", markup=False)
 
 
 def _ws_printer_loop(ws: WsController, state: draft_state.DraftState,
@@ -346,7 +352,15 @@ def _ws_printer_loop(ws: WsController, state: draft_state.DraftState,
     response. Safe to print from this thread because main() wraps the
     whole session in patch_stdout()."""
     while not stop.wait(0.3):
-        _drain_ws(ws, state, resolver, vals, nomination_list)
+        try:
+            _drain_ws(ws, state, resolver, vals, nomination_list)
+        except Exception as exc:
+            console.print(
+                f"LIVE FEED ERROR: {exc!r} -- the live display/auto-record thread hit an "
+                "error on one frame and is continuing, but check the ws-log-*.jsonl and "
+                "'me'/'teams' state carefully.",
+                markup=False,
+            )
 
 
 NOMINATION_LIST_PATH = Path(__file__).resolve().parents[1] / "data" / "nomination-list.txt"
@@ -626,34 +640,40 @@ def main() -> int:
             elif head == "b":
                 if not ws:
                     console.print("[yellow]'b' only works in --ws mode.[/yellow]")
-                elif ws.pointer.player_id is None:
-                    console.print("[yellow]No active nomination to bid on.[/yellow]")
                 else:
-                    player_id = ws.pointer.player_id
-                    name, _ = resolver.resolve(player_id)
-                    match = lookup.get(name.lower())
-                    adjusted = max(1, round(match.value * state.inflation(vals))) if match else None
-                    plan = evaluate_bid(cmd[1:], ws.pointer.high_bid, state.max_bid(state.my_team), adjusted)
-                    if isinstance(plan, BidRefused):
-                        console.print(f"[red]Refused:[/red] {plan.reason}")
+                    pointer = ws.pointer                     # single atomic snapshot
+                    if pointer.player_id is None:
+                        console.print("[yellow]No active nomination to bid on.[/yellow]")
                     else:
-                        amount = plan.amount
-                        proceed = True
-                        if isinstance(plan, BidNeedsConfirmation):
-                            prompt = f"[yellow]{plan.reason} -- bid ${amount} on {name}? (y/N)[/yellow] "
-                            try:
-                                answer = (session.prompt(prompt) if session else console.input(prompt)).strip().lower()
-                            except (EOFError, KeyboardInterrupt):
-                                answer = "n"
-                            proceed = answer == "y"
-                            if not proceed:
-                                console.print("Cancelled.")
-                        if proceed and ws.pointer.player_id != player_id:
-                            console.print(f"[red]Refused:[/red] the nomination changed while you were deciding "
-                                          f"(was {name}) -- bid not sent, re-issue 'b' if you still want in.")
-                        elif proceed:
-                            ws.client.send_bid(player_id, amount)
-                            console.print(f"[green]Sent bid ${amount} on {name}.[/green]")
+                        player_id = pointer.player_id
+                        name, _ = resolver.resolve(player_id)
+                        match = lookup.get(name.lower())
+                        adjusted = max(1, round(match.value * state.inflation(vals))) if match else None
+                        plan = evaluate_bid(cmd[1:], pointer.high_bid, state.max_bid(state.my_team), adjusted)
+                        if isinstance(plan, BidRefused):
+                            console.print(f"[red]Refused:[/red] {plan.reason}")
+                        else:
+                            amount = plan.amount
+                            proceed = True
+                            if isinstance(plan, BidNeedsConfirmation):
+                                prompt = f"[yellow]{plan.reason} -- bid ${amount} on {name}? (y/N)[/yellow] "
+                                try:
+                                    answer = (session.prompt(prompt) if session else console.input(prompt)).strip().lower()
+                                except (EOFError, KeyboardInterrupt):
+                                    answer = "n"
+                                proceed = answer == "y"
+                                if not proceed:
+                                    console.print("Cancelled.")
+                            if proceed and ws.pointer.player_id != player_id:   # the one deliberate fresh re-read
+                                console.print(f"[red]Refused:[/red] the nomination changed while you were deciding "
+                                              f"(was {name}) -- bid not sent, re-issue 'b' if you still want in.")
+                            elif proceed:
+                                try:
+                                    ws.client.send_bid(player_id, amount)
+                                except RuntimeError as exc:
+                                    console.print(f"[red]Not sent:[/red] {exc} -- bid in ESPN's own UI if urgent.")
+                                else:
+                                    console.print(f"[green]Sent bid ${amount} on {name}.[/green]")
             elif head == "n":
                 if not ws:
                     console.print("[yellow]'n' only works in --ws mode.[/yellow]")
@@ -667,8 +687,12 @@ def main() -> int:
                     if not match or match.espn_id is None:
                         console.print(f"[red]Unknown or unresolvable player: {name}[/red]")
                     else:
-                        ws.client.send_nomination(match.espn_id, 1)
-                        console.print(f"[green]Nominated {match.name} at $1.[/green]")
+                        try:
+                            ws.client.send_nomination(match.espn_id, 1)
+                        except RuntimeError as exc:
+                            console.print(f"[red]Not sent:[/red] {exc} -- nominate in ESPN's own UI if urgent.")
+                        else:
+                            console.print(f"[green]Nominated {match.name} at $1.[/green]")
             elif len(cmd) >= 3 and cmd[-2].lstrip("$").isdigit():
                 team = cmd[-1]
                 price = int(cmd[-2].lstrip("$"))

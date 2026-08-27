@@ -10,12 +10,19 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from dataclasses import dataclass, field, asdict, fields
 from pathlib import Path
 
 from . import config
 
 STATE_PATH = Path(__file__).resolve().parents[2] / "data" / "draft-state.json"
+
+# In --ws mode, the background printer thread records sales (record_pick ->
+# save()) alongside the main thread's own record()/undo() calls. Without this,
+# two threads writing the same fixed tmp path can interleave, corrupting the
+# write or making one thread's os.replace lose a FileNotFoundError race.
+_save_lock = threading.Lock()
 
 
 def normalize_team(name: str) -> str:
@@ -177,13 +184,14 @@ class DraftState:
     def save(self, path: Path | None = None) -> None:
         path = path or self.state_path
         path.parent.mkdir(parents=True, exist_ok=True)
-        payload = json.dumps(
-            {"my_team": self.my_team, "purchases": [asdict(p) for p in self.purchases]},
-            indent=2,
-        )
-        tmp = path.with_suffix(path.suffix + ".tmp")
-        tmp.write_text(payload)
-        os.replace(tmp, path)
+        with _save_lock:
+            payload = json.dumps(
+                {"my_team": self.my_team, "purchases": [asdict(p) for p in self.purchases]},
+                indent=2,
+            )
+            tmp = path.with_suffix(path.suffix + ".tmp")
+            tmp.write_text(payload)
+            os.replace(tmp, path)
 
     @classmethod
     def load(cls, path: Path = STATE_PATH) -> "DraftState":

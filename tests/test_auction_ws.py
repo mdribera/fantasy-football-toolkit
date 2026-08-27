@@ -23,6 +23,12 @@ def test_clock_state_2_sets_pointer():
     assert updated == auction.WsAuctionPointer(3915511, 41, None)
 
 
+def test_nomination_event_sets_nominating_team_and_clears_player():
+    pointer = auction.WsAuctionPointer(3915511, 43, None)
+    updated = auction.apply_ws_event(pointer, draft_ws.Nomination(7, 25000))
+    assert updated == auction.WsAuctionPointer(None, 0, 7)
+
+
 def test_clock_state_1_clears_player_and_sets_nominating_team():
     pointer = auction.WsAuctionPointer(3915511, 43, None)
     event = draft_ws.Clock(1, 25000, nominating_team=7)
@@ -96,3 +102,17 @@ def test_evaluate_bid_confirms_far_over_sheet_value():
 def test_evaluate_bid_ready_when_small_jump_and_near_sheet():
     plan = auction.evaluate_bid(["41"], current_high=40, my_max_bid=100, adjusted_value=45)
     assert plan == auction.BidReady(41)
+
+
+def test_evaluate_bid_ready_at_exact_jump_boundary():
+    # jump == TYPO_GUARD_JUMP exactly ($10): only "more than" $10 should confirm.
+    plan = auction.evaluate_bid(["50"], current_high=40, my_max_bid=100, adjusted_value=None)
+    assert plan == auction.BidReady(50)
+
+
+def test_evaluate_bid_ready_at_exact_sheet_multiple_boundary():
+    # amount == adjusted_value * TYPO_GUARD_SHEET_MULTIPLE exactly (1.5x): only
+    # "exceeds" should confirm. Keep the jump small so only the sheet-multiple
+    # check is in play.
+    plan = auction.evaluate_bid(["30"], current_high=25, my_max_bid=100, adjusted_value=20)
+    assert plan == auction.BidReady(30)
