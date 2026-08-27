@@ -601,3 +601,19 @@ async def test_typing_in_the_command_input_does_not_fire_hotkeys(tmp_path):
         await pilot.pause()
         assert app.query_one("#command").value == "best"
     assert ws.client.sent == []
+
+
+@pytest.mark.asyncio
+async def test_b_drains_pending_events_before_evaluating_the_bid(tmp_path):
+    """A rival's raise can arrive over the wire but sit undrained until the
+    next 300ms poll tick. Pressing b must not evaluate against a pointer
+    that's already stale."""
+    app, ws, _ = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        ws.feed(draft_ws.Bid(4, 3915511, 40, 25000, 12731))
+        await app._poll()
+        await pilot.pause()
+        ws.feed(draft_ws.Bid(8, 3915511, 45, 25000, 12000))   # left undrained
+        await pilot.press("b")
+        await pilot.pause()
+    assert ws.client.sent == [("BID", 3915511, 46)]

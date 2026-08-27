@@ -411,6 +411,7 @@ class TextualWsApp(App):
         self._start_bid([])
 
     def _start_bid(self, args: list[str]) -> None:
+        self._drain()                                 # fold in anything already arrived
         pointer = self.ws.pointer                     # single atomic snapshot
         if pointer.player_id is None:
             self._flash("[yellow]No active nomination to bid on.[/yellow]")
