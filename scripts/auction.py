@@ -371,7 +371,8 @@ def load_values() -> list[values.Valuation]:
     return [values.Valuation(**row) for row in json.loads(VALUES_PATH.read_text())]
 
 
-def show_me(state: draft_state.DraftState, vals: list[values.Valuation]) -> None:
+def me_table(state: draft_state.DraftState,
+             vals: list[values.Valuation]) -> tuple[Table, str]:
     me = state.my_team
     table = Table(title=f"{me} -- ${state.budget_left(me)} left, "
                         f"{state.spots_left(me)} spots, max bid ${state.max_bid(me)}")
@@ -390,17 +391,21 @@ def show_me(state: draft_state.DraftState, vals: list[values.Valuation]) -> None
         style = "green" if value and value > p.price else "red" if value else "dim"
         table.add_row(p.player, p.position, f"${p.price}",
                       f"${value}" if value else "-", f"[{style}]{edge}[/{style}]")
+
+    unfilled = {k: v for k, v in state.needs(me).items() if v > 0}
+    footer = ("Still need: " + ", ".join(f"{k} x{v}" for k, v in unfilled.items())
+              if unfilled else "[green]All starting slots filled.[/green]")
+    return table, footer
+
+
+def show_me(state: draft_state.DraftState, vals: list[values.Valuation]) -> None:
+    table, footer = me_table(state, vals)
     console.print(table)
-
-    needs = state.needs(me)
-    unfilled = {k: v for k, v in needs.items() if v > 0}
-    if unfilled:
-        console.print("Still need: " + ", ".join(f"{k} x{v}" for k, v in unfilled.items()))
-    else:
-        console.print("[green]All starting slots filled.[/green]")
+    console.print(footer)
 
 
-def show_best(state, vals, position=None, limit=15) -> None:
+def best_table(state: draft_state.DraftState, vals: list[values.Valuation],
+               position=None, limit=15) -> Table:
     taken = state.taken()
     pool = [v for v in vals if v.name not in taken]
     if position:
@@ -421,10 +426,14 @@ def show_best(state, vals, position=None, limit=15) -> None:
         adjusted = max(1, round(v.value * inflation))
         table.add_row(v.name, v.position, str(v.tier),
                       f"{v.projected_points:.0f}", f"${v.value}", f"${adjusted}")
-    console.print(table)
+    return table
 
 
-def show_teams(state: draft_state.DraftState) -> None:
+def show_best(state, vals, position=None, limit=15) -> None:
+    console.print(best_table(state, vals, position, limit))
+
+
+def teams_table(state: draft_state.DraftState) -> Table:
     table = Table(title="League budgets")
     table.add_column("Team")
     table.add_column("Spent", justify="right")
@@ -436,7 +445,29 @@ def show_teams(state: draft_state.DraftState) -> None:
         table.add_row(f"[{style}]{team}[/{style}]" if style else team,
                       f"${state.spent_by(team)}", f"${state.budget_left(team)}",
                       str(state.spots_left(team)), f"${state.max_bid(team)}")
-    console.print(table)
+    return table
+
+
+def show_teams(state: draft_state.DraftState) -> None:
+    console.print(teams_table(state))
+
+
+def market_table(state: draft_state.DraftState,
+                 vals: list[values.Valuation]) -> Table:
+    table = Table(title=f"Market vs sheet -- overall x{state.inflation(vals):.2f}")
+    table.add_column("Pos")
+    table.add_column("Paying", justify="right")
+    table.add_column("Read")
+    for pos, rate in sorted(state.inflation_by_position(vals).items(),
+                            key=lambda kv: kv[1], reverse=True):
+        if rate > 1.1:
+            read = "[red]over sheet -- let these go[/red]"
+        elif rate < 0.9:
+            read = "[green]under sheet -- buy here[/green]"
+        else:
+            read = "[dim]at sheet[/dim]"
+        table.add_row(pos, f"x{rate:.2f}", read)
+    return table
 
 
 def _drain_sync(sync: SyncController, state: draft_state.DraftState,
@@ -581,20 +612,7 @@ def main() -> int:
             else:
                 console.print("[yellow]Sync disabled (--no-sync).[/yellow]")
         elif head == "market":
-            table = Table(title=f"Market vs sheet -- overall x{state.inflation(vals):.2f}")
-            table.add_column("Pos")
-            table.add_column("Paying", justify="right")
-            table.add_column("Read")
-            for pos, rate in sorted(state.inflation_by_position(vals).items(),
-                                    key=lambda kv: kv[1], reverse=True):
-                if rate > 1.1:
-                    read = "[red]over sheet -- let these go[/red]"
-                elif rate < 0.9:
-                    read = "[green]under sheet -- buy here[/green]"
-                else:
-                    read = "[dim]at sheet[/dim]"
-                table.add_row(pos, f"x{rate:.2f}", read)
-            console.print(table)
+            console.print(market_table(state, vals))
             console.print(f"Other teams still hold [bold]"
                           f"${state.dollars_remaining_in_room()}[/bold] combined.")
         elif head == "undo":

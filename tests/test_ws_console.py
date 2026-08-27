@@ -411,3 +411,70 @@ async def test_a_bid_over_your_max_is_refused_without_a_modal(tmp_path):
         await pilot.pause()
         assert not isinstance(app.screen, ws_console.ConfirmBidScreen)
     assert ws.client.sent == []
+
+
+@pytest.mark.asyncio
+async def test_colon_opens_the_command_input(tmp_path):
+    app, _, _ = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.press("colon")
+        await pilot.pause()
+        command = app.query_one("#command")
+        assert command.display
+        assert command.has_focus
+
+
+@pytest.mark.asyncio
+async def test_command_b_with_an_amount_bids_that_amount(tmp_path):
+    app, ws, _ = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        ws.feed(draft_ws.Bid(4, 3915511, 40, 25000, 12731))
+        await app._poll()
+        await pilot.pause()
+        app._run_command("b 45")
+        await pilot.pause()
+    assert ws.client.sent == [("BID", 3915511, 45)]
+
+
+@pytest.mark.asyncio
+async def test_command_undo_removes_the_last_purchase(tmp_path):
+    app, ws, state = make_app(tmp_path)
+    state.record("Justin Jefferson", "WR", 52, "ME")
+    async with app.run_test() as pilot:
+        app._run_command("undo")
+        await pilot.pause()
+    assert state.purchases == []
+
+
+@pytest.mark.asyncio
+async def test_command_market_and_teams_render_without_error(tmp_path):
+    app, _, _ = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        for line in ("market", "teams", "best RB", "need", "me"):
+            app._run_command(line)
+        await pilot.pause()
+        assert len(app.bidlog.lines) > 5
+
+
+@pytest.mark.asyncio
+async def test_command_quit_exits(tmp_path):
+    app, _, _ = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        app._run_command("quit")
+        await pilot.pause()
+    assert not app.is_running
+
+
+@pytest.mark.asyncio
+async def test_typing_in_the_command_input_does_not_fire_hotkeys(tmp_path):
+    app, ws, _ = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        ws.feed(draft_ws.Bid(4, 3915511, 40, 25000, 12731))
+        await app._poll()
+        await pilot.pause()
+        await pilot.press("colon")
+        await pilot.pause()
+        await pilot.press("b", "e", "s", "t")
+        await pilot.pause()
+        assert app.query_one("#command").value == "best"
+    assert ws.client.sent == []

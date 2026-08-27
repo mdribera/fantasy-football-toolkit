@@ -19,7 +19,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal
 from textual.reactive import reactive
 from textual.screen import ModalScreen
-from textual.widgets import Footer, Label, ListItem, ListView, RichLog, Static
+from textual.widgets import Footer, Input, Label, ListItem, ListView, RichLog, Static
 
 import auction
 from ff import config, draft_state, draft_sync, draft_ws, values
@@ -184,6 +184,7 @@ class TextualWsApp(App):
             yield RosterPanel(id="roster")
         yield AnalysisPanel(id="analysis")
         yield NominationList(id="nominations")
+        yield Input(id="command", placeholder="b 45 | undo | market | teams | best RB | need | me | quit")
         yield Footer()
 
     async def on_mount(self) -> None:
@@ -193,6 +194,7 @@ class TextualWsApp(App):
         self.roster = self.query_one("#roster", RosterPanel)
         self.analysis = self.query_one("#analysis", AnalysisPanel)
         self.nominations = self.query_one("#nominations", NominationList)
+        self.command = self.query_one("#command", Input)
 
         self.bidlog.border_title = "Bid log (this nomination)"
         self.roster.border_title = "Your roster"
@@ -503,7 +505,54 @@ class TextualWsApp(App):
         self.screen.remove_class("my-turn")
 
     def action_command(self) -> None:
-        """Placeholder until Task 7."""
+        self.command.display = True
+        self.command.focus()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        line = event.value.strip()
+        event.input.value = ""
+        event.input.display = False
+        self.nominations.focus()
+        if line:
+            self._run_command(line)
+
+    def _run_command(self, line: str) -> None:
+        """The same verbs the REPL dispatches, for everything not worth a
+        hotkey. Tables come from auction.py's builders so both consoles show
+        exactly the same numbers."""
+        cmd = line.split()
+        head = cmd[0].lower()
+
+        if head in ("quit", "exit", "q"):
+            self.exit()
+        elif head == "b":
+            self._start_bid(cmd[1:])
+        elif head == "me":
+            table, footer = auction.me_table(self.state, self.vals)
+            self.bidlog.write(table)
+            self._flash(footer)
+        elif head == "teams":
+            self.bidlog.write(auction.teams_table(self.state))
+        elif head == "market":
+            self.bidlog.write(auction.market_table(self.state, self.vals))
+            self._flash(f"Other teams still hold [bold]"
+                        f"${self.state.dollars_remaining_in_room()}[/bold] combined.")
+        elif head == "need":
+            for pos, count in self.state.needs(self.state.my_team).items():
+                if count > 0:
+                    self.bidlog.write(auction.best_table(self.state, self.vals, pos, 6))
+        elif head == "best":
+            pos = cmd[1] if len(cmd) > 1 and not cmd[1].isdigit() else None
+            limit = next((int(c) for c in cmd[1:] if c.isdigit()), 15)
+            self.bidlog.write(auction.best_table(self.state, self.vals, pos, limit))
+        elif head == "undo":
+            removed = self.state.undo()
+            self._flash(f"Removed: {removed}" if removed else "Nothing to undo.")
+            self._refresh_panels()
+            self.call_later(self._reload_nominations)
+        else:
+            self._flash("[yellow]Unrecognized.[/yellow] Use: b/undo/market/teams/"
+                        "best/need/me/quit")
 
 
 def run_ws_console(ws, state: draft_state.DraftState,
