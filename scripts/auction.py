@@ -25,6 +25,7 @@ import json
 import sys
 import threading
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -32,7 +33,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from rich.console import Console
 from rich.table import Table
 
-from ff import config, draft_state, draft_sync, values
+from ff import config, draft_state, draft_sync, draft_ws, values
 
 console = Console()
 VALUES_PATH = Path(__file__).resolve().parents[1] / "data" / "values.json"
@@ -110,6 +111,99 @@ class SyncController:
 
     def is_down(self) -> bool:
         return self.consecutive_failures >= FEED_DOWN_THRESHOLD
+
+
+# --- live websocket auction logic (pure, no I/O) --------------------------
+# Kept separate from WsController (below) and unit-tested directly: this is
+# the logic that decides what a real-money bid does, so it gets a test
+# before it ever talks to a live socket.
+
+CLOCK_MILESTONES_S = (10, 5)
+
+
+@dataclass
+class WsAuctionPointer:
+    """What the live nomination is doing right now, derived from drained
+    websocket events -- the state 'b' and 'n' need to know what they're
+    acting on."""
+    player_id: int | None = None
+    high_bid: int = 0
+    nominating_team: int | None = None
+
+
+def apply_ws_event(pointer: WsAuctionPointer, event: draft_ws.Event) -> WsAuctionPointer:
+    """Fold one parsed websocket event into the current auction pointer."""
+    if isinstance(event, draft_ws.Bid):
+        return WsAuctionPointer(event.player_id, event.amount, pointer.nominating_team)
+    if isinstance(event, draft_ws.Clock):
+        if event.state == 2:
+            return WsAuctionPointer(event.player_id, event.high_bid_amount, pointer.nominating_team)
+        if event.state == 1:
+            return WsAuctionPointer(None, 0, event.nominating_team)
+        return pointer
+    if isinstance(event, draft_ws.Sold):
+        return WsAuctionPointer(None, 0, None)
+    return pointer
+
+
+def clock_milestone(remaining_ms: int, announced: set[int]) -> int | None:
+    """First time remaining_ms drops at or below a threshold in
+    CLOCK_MILESTONES_S, returns that threshold once; the caller clears
+    `announced` whenever the nomination changes."""
+    for threshold in CLOCK_MILESTONES_S:
+        if remaining_ms <= threshold * 1000 and threshold not in announced:
+            announced.add(threshold)
+            return threshold
+    return None
+
+
+@dataclass(frozen=True)
+class BidRefused:
+    reason: str
+
+
+@dataclass(frozen=True)
+class BidNeedsConfirmation:
+    amount: int
+    reason: str
+
+
+@dataclass(frozen=True)
+class BidReady:
+    amount: int
+
+
+BidPlan = BidRefused | BidNeedsConfirmation | BidReady
+
+TYPO_GUARD_JUMP = 10             # confirm if the bid clears the current high by more than this
+TYPO_GUARD_SHEET_MULTIPLE = 1.5  # confirm if the bid exceeds this multiple of adjusted sheet value
+
+
+def evaluate_bid(args: list[str], current_high: int, my_max_bid: int,
+                  adjusted_value: int | None) -> BidPlan:
+    """Decide what 'b' or 'b <amount>' should do, before anything is sent.
+
+    args is the command split on whitespace with the leading 'b' removed.
+    No amount means "current high + 1", the common case.
+    """
+    if args:
+        if not args[0].isdigit():
+            return BidRefused(f"'{args[0]}' is not a dollar amount")
+        amount = int(args[0])
+    else:
+        amount = current_high + 1
+
+    if amount <= current_high:
+        return BidRefused(f"${amount} does not beat the current high of ${current_high}")
+    if amount > my_max_bid:
+        return BidRefused(f"${amount} exceeds your max bid of ${my_max_bid}")
+
+    jump = amount - current_high
+    if jump > TYPO_GUARD_JUMP:
+        return BidNeedsConfirmation(amount, f"${amount} is ${jump} over the current high of ${current_high}")
+    if adjusted_value is not None and amount > adjusted_value * TYPO_GUARD_SHEET_MULTIPLE:
+        return BidNeedsConfirmation(amount, f"${amount} is well over the ${adjusted_value} adjusted sheet value")
+    return BidReady(amount)
 
 
 def load_values() -> list[values.Valuation]:
