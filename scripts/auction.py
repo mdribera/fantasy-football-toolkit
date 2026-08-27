@@ -369,6 +369,23 @@ def load_nomination_list(path: Path) -> list[str]:
     return [line.strip() for line in path.read_text().splitlines() if line.strip()]
 
 
+def load_state(fresh: bool, path: Path = draft_state.STATE_PATH) -> draft_state.DraftState:
+    """Fresh state for a new practice-draft rehearsal, or the persisted one.
+
+    data/draft-state.json is a single global file with no per-draft key, so
+    loading it across separate practice-draft sessions carries every earlier
+    session's purchases along -- including collisions on real players who get
+    nominated in more than one session, since espn_pick_id is the real
+    player's permanent id, not scoped to one draft. --fresh sidesteps that by
+    skipping the load entirely; the first save() after this still writes to
+    the same path, so a --fresh run replaces the file's contents once
+    anything gets recorded.
+    """
+    if fresh:
+        return draft_state.DraftState(state_path=path)
+    return draft_state.DraftState.load(path)
+
+
 def load_values() -> list[values.Valuation]:
     if not VALUES_PATH.exists():
         console.print("[red]No data/values.json.[/red] Run scripts/build_values.py first.")
@@ -523,6 +540,9 @@ def main() -> int:
     parser.add_argument("--my-team", help="team label to use for 'me'/'need'")
     parser.add_argument("--league-id", help="override ESPN_LEAGUE_ID (e.g. a practice draft)")
     parser.add_argument("--team-id", help="override ESPN_TEAM_ID")
+    parser.add_argument("--fresh", action="store_true",
+                        help="start with an empty draft state instead of loading "
+                             "data/draft-state.json (for practice-draft rehearsals)")
     args = parser.parse_args()
 
     if (args.ws or args.mirror) and (args.no_sync or args.replay):
@@ -531,7 +551,10 @@ def main() -> int:
         parser.error("--ws and --mirror are alternatives; pick one")
 
     vals = load_values()
-    state = draft_state.DraftState.load()
+    state = load_state(args.fresh)
+    if args.fresh:
+        console.print("[yellow]--fresh: starting with an empty draft state; "
+                      "data/draft-state.json will be overwritten on first save.[/yellow]")
     if args.my_team:
         state.my_team = draft_state.normalize_team(args.my_team)
     lookup = {v.name.lower(): v for v in vals}

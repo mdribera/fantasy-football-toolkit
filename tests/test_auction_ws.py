@@ -7,7 +7,7 @@ separately in tests/test_draft_ws_client.py.
 from __future__ import annotations
 
 import auction
-from ff import draft_ws, values
+from ff import draft_state, draft_ws, values
 
 
 def test_bid_event_sets_pointer():
@@ -189,3 +189,23 @@ def test_evaluate_bid_refuses_when_you_already_hold_the_high():
     plan = auction.evaluate_bid([], 40, 100, 50, already_high=True)
     assert isinstance(plan, auction.BidRefused)
     assert "already hold" in plan.reason
+
+
+def test_load_state_fresh_ignores_an_existing_file(tmp_path):
+    path = tmp_path / "draft-state.json"
+    draft_state.DraftState(
+        purchases=[draft_state.Purchase("Lamar Jackson", "QB", 62, "FWD")],
+        state_path=path,
+    ).save()
+    state = auction.load_state(fresh=True, path=path)
+    assert state.purchases == []
+
+
+def test_load_state_not_fresh_loads_existing_data(tmp_path):
+    path = tmp_path / "draft-state.json"
+    draft_state.DraftState(
+        purchases=[draft_state.Purchase("Lamar Jackson", "QB", 62, "FWD")],
+        state_path=path,
+    ).save()
+    state = auction.load_state(fresh=False, path=path)
+    assert state.purchases[0].player == "Lamar Jackson"
