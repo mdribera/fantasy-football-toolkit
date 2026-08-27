@@ -3,6 +3,8 @@
 
 Commands (type at the > prompt):
   <player> <price> <team>   record a purchase        e.g. "Josh Allen 62 ME"
+  b [<amount>]              place a bid (ws mode)    e.g. "b 45" or just "b"
+  n <player>                nominate a player (ws mode)
   me                        my roster, budget, max bid, unfilled slots
   best [POS] [n]            best remaining by value
   need                      best remaining at positions I still must fill
@@ -16,6 +18,8 @@ By default this polls ESPN's own draft-detail feed in the background and
 auto-records completed picks as they close -- see 'sync' to force a pull, and
 --no-sync to disable it and enter everything by hand. If the feed goes quiet,
 a banner says so; manual entry keeps working regardless.
+
+Use --ws for live websocket console mode, or --mirror as a fallback.
 
 State persists to data/draft-state.json, so a crashed terminal loses nothing.
 """
@@ -718,7 +722,7 @@ def main() -> int:
                 console.print(f"Recorded: {name} ${price} -> {team}{note}")
             else:
                 console.print("[yellow]Unrecognized.[/yellow] "
-                              "Use: '<player> <price> <team>' or me/best/need/teams/market/undo/quit")
+                              "Use: '<player> <price> <team>', b/n (ws mode), or me/best/need/teams/market/undo/quit")
         stop_printer.set()
 
     if ws:
