@@ -541,7 +541,8 @@ def main() -> int:
                 elif ws.pointer.player_id is None:
                     console.print("[yellow]No active nomination to bid on.[/yellow]")
                 else:
-                    name, _ = resolver.resolve(ws.pointer.player_id)
+                    player_id = ws.pointer.player_id
+                    name, _ = resolver.resolve(player_id)
                     match = lookup.get(name.lower())
                     adjusted = max(1, round(match.value * state.inflation(vals))) if match else None
                     plan = evaluate_bid(cmd[1:], ws.pointer.high_bid, state.max_bid(state.my_team), adjusted)
@@ -552,12 +553,18 @@ def main() -> int:
                         proceed = True
                         if isinstance(plan, BidNeedsConfirmation):
                             prompt = f"[yellow]{plan.reason} -- bid ${amount} on {name}? (y/N)[/yellow] "
-                            answer = (session.prompt(prompt) if session else console.input(prompt)).strip().lower()
+                            try:
+                                answer = (session.prompt(prompt) if session else console.input(prompt)).strip().lower()
+                            except (EOFError, KeyboardInterrupt):
+                                answer = "n"
                             proceed = answer == "y"
                             if not proceed:
                                 console.print("Cancelled.")
-                        if proceed:
-                            ws.client.send_bid(ws.pointer.player_id, amount)
+                        if proceed and ws.pointer.player_id != player_id:
+                            console.print(f"[red]Refused:[/red] the nomination changed while you were deciding "
+                                          f"(was {name}) -- bid not sent, re-issue 'b' if you still want in.")
+                        elif proceed:
+                            ws.client.send_bid(player_id, amount)
                             console.print(f"[green]Sent bid ${amount} on {name}.[/green]")
             elif len(cmd) >= 3 and cmd[-2].lstrip("$").isdigit():
                 team = cmd[-1]
