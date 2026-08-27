@@ -45,11 +45,9 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import sys
 import threading
 import time
-import urllib.parse
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -59,24 +57,13 @@ from rich.table import Table
 import websocket
 
 from ff import config, draft_state, draft_sync, draft_ws
+from ff.draft_ws import redact_token, parse_join_url
 
 console = Console()
 PING_INTERVAL_S = 15  # confirmed cadence from a HAR capture, see docs/draft-ws-plan.md
 VALUES_PATH = Path(__file__).resolve().parents[1] / "data" / "values.json"
 SCRATCH_STATE_PATH = Path(__file__).resolve().parents[1] / "data" / "cache" / "draft-ws-state-replay.json"
 DEFAULT_JOIN_URL_FILE = Path(__file__).resolve().parents[1] / "data" / "join-url.txt"
-
-# SWID (a brace-wrapped GUID) and TOKEN's trailing sessionId are per-account
-# auth material and must never land in a recording on disk. SWID shows up
-# bare in more than just the TOKEN frame -- JOINED carries one too -- so this
-# redacts it wherever it appears, not just after a "TOKEN " prefix.
-_SWID_RE = re.compile(r"\{[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\}")
-_TOKEN_SESSION_RE = re.compile(r"^(TOKEN \d+:\d+:\d+:\{REDACTED-SWID\}:)\d+")
-
-
-def redact_token(msg: str) -> str:
-    msg = _SWID_RE.sub("{REDACTED-SWID}", msg)
-    return _TOKEN_SESSION_RE.sub(lambda m: m.group(1) + "REDACTED-SESSION", msg)
 
 
 def load_join_url(path: Path) -> str:
@@ -91,26 +78,17 @@ def load_join_url(path: Path) -> str:
     return url
 
 
-def parse_join_url(url: str) -> tuple[str, str]:
-    """Pull leagueId and teamId out of a pasted JOIN URL, for the console log
-    and the Referer header. The token and the rest of the query string are
-    used verbatim from `url` -- never reconstructed."""
-    query = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
-    try:
-        league_id = query["2"][0]
-        team_id = query["3"][0]
-    except (KeyError, IndexError) as exc:
-        raise SystemExit(f"Could not find leagueId/teamId in the join URL: {exc}") from exc
-    return league_id, team_id
-
-
 def cmd_record(out_path: Path, join_url: str, cred: config.EspnCredentials, duration: int | None,
                 send_ping: bool) -> int:
     if not cred.has_private_auth:
         console.print("[red]ESPN_SWID / ESPN_S2 required.[/red]")
         return 1
 
-    league_id, team_id = parse_join_url(join_url)
+    try:
+        league_id, team_id = parse_join_url(join_url)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        return 1
     console.print(f"Connecting to league {league_id} as team {team_id} (from pasted join URL).")
     ping_note = f", sending PING every {PING_INTERVAL_S}s" if send_ping else ", sending nothing"
     console.print(f"Logging every frame to {out_path}{ping_note}. Ctrl-C to stop.")

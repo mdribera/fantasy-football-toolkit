@@ -15,6 +15,8 @@ frame shape not yet seen.
 from __future__ import annotations
 
 import json
+import re
+import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterator
@@ -298,6 +300,34 @@ def parse_frame(raw: str) -> Event:
     except (ValueError, IndexError) as exc:
         return WsError(msg, f"malformed {kind} frame: {exc}")
     return WsError(msg, f"unrecognized frame kind: {kind}")
+
+
+# --- token handling -----------------------------------------------------
+# SWID (a brace-wrapped GUID) and TOKEN's trailing sessionId are per-account
+# auth material and must never land in a recording on disk. SWID shows up
+# bare in more than just the TOKEN frame -- JOINED and LEFT carry one too --
+# so this redacts it wherever it appears, not just after a "TOKEN " prefix.
+
+_SWID_RE = re.compile(r"\{[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}\}")
+_TOKEN_SESSION_RE = re.compile(r"^(TOKEN \d+:\d+:\d+:\{REDACTED-SWID\}:)\d+")
+
+
+def redact_token(msg: str) -> str:
+    msg = _SWID_RE.sub("{REDACTED-SWID}", msg)
+    return _TOKEN_SESSION_RE.sub(lambda m: m.group(1) + "REDACTED-SESSION", msg)
+
+
+def parse_join_url(url: str) -> tuple[str, str]:
+    """Pull leagueId and teamId out of a pasted JOIN URL, for logging and the
+    Referer header. The token and the rest of the query string are used
+    verbatim from `url` -- never reconstructed."""
+    query = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
+    try:
+        league_id = query["2"][0]
+        team_id = query["3"][0]
+    except (KeyError, IndexError) as exc:
+        raise ValueError(f"Could not find leagueId/teamId in the join URL: {exc}") from exc
+    return league_id, team_id
 
 
 def iter_frames(path: Path, include_sent: bool = False) -> Iterator[str]:
