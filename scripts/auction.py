@@ -535,6 +535,30 @@ def main() -> int:
                 pos = cmd[1] if len(cmd) > 1 and not cmd[1].isdigit() else None
                 n = next((int(c) for c in cmd[1:] if c.isdigit()), 15)
                 show_best(state, vals, pos, n)
+            elif head == "b":
+                if not ws:
+                    console.print("[yellow]'b' only works in --ws mode.[/yellow]")
+                elif ws.pointer.player_id is None:
+                    console.print("[yellow]No active nomination to bid on.[/yellow]")
+                else:
+                    name, _ = resolver.resolve(ws.pointer.player_id)
+                    match = lookup.get(name.lower())
+                    adjusted = max(1, round(match.value * state.inflation(vals))) if match else None
+                    plan = evaluate_bid(cmd[1:], ws.pointer.high_bid, state.max_bid(state.my_team), adjusted)
+                    if isinstance(plan, BidRefused):
+                        console.print(f"[red]Refused:[/red] {plan.reason}")
+                    else:
+                        amount = plan.amount
+                        proceed = True
+                        if isinstance(plan, BidNeedsConfirmation):
+                            prompt = f"[yellow]{plan.reason} -- bid ${amount} on {name}? (y/N)[/yellow] "
+                            answer = (session.prompt(prompt) if session else console.input(prompt)).strip().lower()
+                            proceed = answer == "y"
+                            if not proceed:
+                                console.print("Cancelled.")
+                        if proceed:
+                            ws.client.send_bid(ws.pointer.player_id, amount)
+                            console.print(f"[green]Sent bid ${amount} on {name}.[/green]")
             elif len(cmd) >= 3 and cmd[-2].lstrip("$").isdigit():
                 team = cmd[-1]
                 price = int(cmd[-2].lstrip("$"))
