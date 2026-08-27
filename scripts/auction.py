@@ -206,6 +206,90 @@ def evaluate_bid(args: list[str], current_high: int, my_max_bid: int,
     return BidReady(amount)
 
 
+DEFAULT_JOIN_URL_FILE = Path(__file__).resolve().parents[1] / "data" / "join-url.txt"
+
+
+def load_join_url(path: Path) -> str:
+    if not path.exists():
+        raise SystemExit(
+            f"No join URL at {path}. Open the draft room, copy the JOIN request's full URL "
+            "from DevTools (Network tab -> WS filter), and paste it into that file."
+        )
+    url = path.read_text().strip()
+    if not url:
+        raise SystemExit(f"{path} is empty.")
+    return url
+
+
+class WsController:
+    """Wraps DraftRoomClient with the same drain-before-prompt shape
+    SyncController gives the REST path, plus the live auction pointer
+    ('b'/'n' need to know what nomination is active and at what price)."""
+
+    def __init__(self, join_url: str, cred: config.EspnCredentials):
+        self.client = draft_ws.DraftRoomClient(join_url, cred)
+        self.pointer = WsAuctionPointer()
+        self._announced: set[int] = set()
+
+    def start(self) -> None:
+        self.client.start()
+
+    def drain(self) -> list[draft_ws.Event]:
+        events = self.client.drain()
+        for event in events:
+            updated = apply_ws_event(self.pointer, event)
+            if updated.player_id != self.pointer.player_id:
+                self._announced.clear()
+            self.pointer = updated
+        return events
+
+    def drain_alerts(self) -> list[str]:
+        return self.client.drain_alerts()
+
+    def milestone(self, event: draft_ws.Clock) -> int | None:
+        return clock_milestone(event.remaining_ms, self._announced)
+
+
+def _drain_ws(ws: WsController, state: draft_state.DraftState,
+              resolver: draft_sync.PlayerResolver, vals: list["values.Valuation"],
+              nomination_list: list[str]) -> None:
+    """Print live websocket events and record completed sales, mirroring
+    _drain_sync's shape for the REST feed."""
+    for alert in ws.drain_alerts():
+        console.print(f"[bold red]{alert}[/bold red]")
+
+    lookup = {v.name: v for v in vals}
+    for event in ws.drain():
+        if isinstance(event, draft_ws.Nomination):
+            team = config.TEAMS.get(event.team_id, f"TEAM{event.team_id}")
+            console.print(f"[bold]NOMINATION[/bold] {team} is on the clock")
+            if event.team_id == config.MY_TEAM_ID:
+                console.print("[bold yellow]Your turn to nominate.[/bold yellow]")
+                show_nomination_list(state, vals, nomination_list)
+        elif isinstance(event, draft_ws.Bid):
+            team = config.TEAMS.get(event.team_id, f"TEAM{event.team_id}")
+            name, _ = resolver.resolve(event.player_id)
+            console.print(f"[dim]BID[/dim] {team} ${event.amount} on {name}")
+        elif isinstance(event, draft_ws.Clock) and event.state == 2:
+            milestone = ws.milestone(event)
+            if milestone:
+                console.print(f"[yellow]{milestone}s[/yellow] left, high bid ${event.high_bid_amount}")
+        elif isinstance(event, draft_ws.Sold):
+            team = config.TEAMS.get(event.team_id, f"TEAM{event.team_id}")
+            name, position = resolver.resolve(event.player_id)
+            if state.record_pick(name, position, event.price, team, espn_pick_id=event.player_id):
+                match = lookup.get(name)
+                note = f" (sheet ${match.value}, {match.value - event.price:+d})" if match else ""
+                console.print(f"[green]SOLD[/green] {name} ${event.price} -> {team}{note}")
+        elif isinstance(event, draft_ws.WsError):
+            console.print(f"[yellow]unparsed frame:[/yellow] {event.raw!r} ({event.reason})")
+
+
+def show_nomination_list(state: draft_state.DraftState, vals: list["values.Valuation"],
+                          names: list[str]) -> None:
+    console.print("[dim]Nomination list not wired up yet.[/dim]")
+
+
 def load_values() -> list[values.Valuation]:
     if not VALUES_PATH.exists():
         console.print("[red]No data/values.json.[/red] Run scripts/build_values.py first.")
@@ -318,10 +402,17 @@ def main() -> int:
                              "instead of live ESPN (for rehearsal)")
     parser.add_argument("--interval", type=int, default=3,
                         help="seconds between background polls (default 3)")
+    parser.add_argument("--ws", action="store_true",
+                        help="use the live draft-room websocket instead of polling mDraftDetail")
+    parser.add_argument("--join-url-file", type=Path, default=DEFAULT_JOIN_URL_FILE,
+                        help=f"file holding the pasted JOIN URL for --ws (default: {DEFAULT_JOIN_URL_FILE})")
     parser.add_argument("--my-team", help="team label to use for 'me'/'need'")
     parser.add_argument("--league-id", help="override ESPN_LEAGUE_ID (e.g. a practice draft)")
     parser.add_argument("--team-id", help="override ESPN_TEAM_ID")
     args = parser.parse_args()
+
+    if args.ws and (args.no_sync or args.replay):
+        parser.error("--ws replaces the REST sync path; drop --no-sync/--replay")
 
     vals = load_values()
     state = draft_state.DraftState.load()
@@ -335,9 +426,16 @@ def main() -> int:
     if args.team_id:
         cred.team_id = args.team_id
 
+    resolver = draft_sync.PlayerResolver(VALUES_PATH)
     sync: SyncController | None = None
-    if not args.no_sync:
-        resolver = draft_sync.PlayerResolver(VALUES_PATH)
+    ws: WsController | None = None
+    nomination_list: list[str] = []
+
+    if args.ws:
+        join_url = load_join_url(args.join_url_file)
+        ws = WsController(join_url, cred)
+        ws.start()
+    elif not args.no_sync:
         if args.replay:
             source = _replay_source(Path(args.replay))
         else:
@@ -345,7 +443,12 @@ def main() -> int:
         sync = SyncController(source, resolver, args.interval)
         sync.start()
 
-    sync_note = "auto-sync every %ds" % args.interval if sync else "sync disabled, manual only"
+    if ws:
+        sync_note = "live websocket"
+    elif sync:
+        sync_note = "auto-sync every %ds" % args.interval
+    else:
+        sync_note = "sync disabled, manual only"
     console.print(f"[bold]Auction console[/bold] -- {config.LEAGUE_NAME}, league {cred.league_id}, "
                   f"${config.SALARY_CAP} cap, {config.ROSTER_SIZE} spots, {sync_note}. "
                   f"{len(state.purchases)} purchases loaded. Type 'quit' to exit.\n")
@@ -353,6 +456,8 @@ def main() -> int:
     while True:
         if sync:
             _drain_sync(sync, state, vals)
+        elif ws:
+            _drain_ws(ws, state, resolver, vals, nomination_list)
         try:
             line = console.input("[bold cyan]>[/bold cyan] ").strip()
         except (EOFError, KeyboardInterrupt):
@@ -374,6 +479,8 @@ def main() -> int:
                 sync.wake()
                 time.sleep(0.5)
                 _drain_sync(sync, state, vals)
+            elif ws:
+                console.print("[dim]Live websocket -- nothing to force-sync.[/dim]")
             else:
                 console.print("[yellow]Sync disabled (--no-sync).[/yellow]")
         elif head == "market":
@@ -431,6 +538,8 @@ def main() -> int:
             console.print("[yellow]Unrecognized.[/yellow] "
                           "Use: '<player> <price> <team>' or me/best/need/teams/market/undo/quit")
 
+    if ws:
+        ws.client.stop()
     state.save()
     console.print("Saved.")
     return 0
