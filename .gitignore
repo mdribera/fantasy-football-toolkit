@@ -5,6 +5,9 @@
 # Git worktrees for isolated task work
 .worktrees/
 
+# Subagent-driven-development scratch workspace (ledgers, briefs, review packages)
+.superpowers/
+
 # Cached data pulls, draft state, recordings
 data/*
 !data/.gitkeep
