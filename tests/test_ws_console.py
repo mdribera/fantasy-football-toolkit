@@ -90,6 +90,12 @@ class FakeWsController:
         return auction.clock_milestone(event.remaining_ms, self._announced)
 
 
+def _roster_rows(app) -> list[tuple]:
+    """Every row currently in the roster DataTable, as plain tuples."""
+    return [tuple(app.roster_table.get_row_at(i))
+            for i in range(app.roster_table.row_count)]
+
+
 def make_app(tmp_path, nomination_list=("Justin Jefferson", "Kenneth Walker III"),
              nomination_list_path=None):
     """Returns (app, ws, state). state_path is always under tmp_path: the
@@ -123,7 +129,8 @@ async def test_app_mounts_every_panel(tmp_path):
     async with app.run_test():
         assert app.query_one("#status", ws_console.StatusPanel)
         assert app.query_one("#bidlog", ws_console.BidLog)
-        assert app.query_one("#roster", ws_console.RosterPanel)
+        assert app.query_one("#roster-header", ws_console.RosterPanel)
+        assert app.query_one("#roster-table", ws_console.RosterTable)
         assert app.query_one("#analysis", ws_console.AnalysisPanel)
         assert app.query_one("#nominations", ws_console.NominationTable) is not None
 
@@ -238,7 +245,7 @@ async def test_init_backfill_refreshes_the_roster_panel(tmp_path):
         await app._poll()
         await pilot.pause()
         assert app.roster.budget_left == 146
-        assert ("Bijan Robinson", "RB", 54) in app.roster.roster
+        assert ("Bijan Robinson", "RB", "$54") in _roster_rows(app)
 
 
 @pytest.mark.asyncio
@@ -354,9 +361,34 @@ async def test_roster_panel_tracks_budget_and_slots(tmp_path):
         await pilot.pause()
         assert app.roster.budget_left == 148
         assert app.roster.spots_left == 15
-        assert ("Justin Jefferson", "WR", 52) in app.roster.roster
+        assert ("Justin Jefferson", "WR", "$52") in _roster_rows(app)
         assert ("WR", 1, 2) in app.roster.slots
         assert ("QB", 0, 2) in app.roster.slots
+
+
+@pytest.mark.asyncio
+async def test_roster_table_keeps_every_player_as_the_roster_grows(tmp_path):
+    """Regression for the 2026-08-27 rehearsal: budget/spots/slot counts on
+    the header updated correctly but only the first drafted name ever
+    rendered below it. Root cause was RosterPanel being a plain Static whose
+    "auto" height gets fixed at the first render and never grows -- a
+    DataTable doesn't have that failure mode, so every recorded purchase
+    must show up as a row regardless of how many came before it."""
+    app, ws, state = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        for player, position, price in [
+            ("Puka Nacua", "WR", 55),
+            ("Amon-Ra St. Brown", "WR", 46),
+            ("Jonathan Taylor", "RB", 45),
+            ("Justin Jefferson", "WR", 36),
+        ]:
+            state.record(player, position, price, "ME")
+            app._refresh_panels()
+            await pilot.pause()
+        rows = _roster_rows(app)
+        assert len(rows) == 4
+        assert ("Amon-Ra St. Brown", "WR", "$46") in rows
+        assert ("Justin Jefferson", "WR", "$36") in rows
 
 
 @pytest.mark.asyncio

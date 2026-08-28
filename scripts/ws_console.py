@@ -18,7 +18,7 @@ import time
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal
+from textual.containers import Horizontal, Vertical
 from textual.reactive import reactive
 from textual.screen import ModalScreen
 from textual.widgets import DataTable, Footer, Input, RichLog, Static
@@ -88,11 +88,16 @@ class BidLog(RichLog):
 
 
 class RosterPanel(Static):
+    """Budget and starting-slot summary, always exactly two lines. The
+    player list lives in the sibling RosterTable -- a plain Static's "auto"
+    height is fixed at whatever it measured on the first render, and does
+    not grow as reactives add more lines to the text later, so a name list
+    here would silently clip once the roster grew past that first size."""
+
     budget_left = reactive(config.SALARY_CAP)
     spots_left = reactive(config.ROSTER_SIZE)
     max_bid_amount = reactive(0)
     slots = reactive(())    # tuple[tuple[str, int, int], ...] pos, have, need
-    roster = reactive(())   # tuple[tuple[str, str, int], ...] name, pos, price
 
     def render(self) -> Text:
         lines = [
@@ -102,11 +107,18 @@ class RosterPanel(Static):
                 f"[{'green' if have >= need else 'yellow'}]{pos} {have}/{need}[/]"
                 for pos, have, need in self.slots
             ) or "[dim]no starters required[/dim]",
-            "",
         ]
-        lines.extend(f"{name}  [dim]{pos}[/dim]  ${price}"
-                     for name, pos, price in self.roster)
         return Text.from_markup("\n".join(lines))
+
+
+class RosterTable(DataTable):
+    """Your own drafted players, one row each -- a DataTable so the list
+    scrolls and virtualizes like NominationTable instead of a Static's fixed
+    "auto" height silently clipping it once the roster grows."""
+
+    def on_mount(self) -> None:
+        self.cursor_type = "none"
+        self.add_columns("Player", "Pos", "Paid")
 
 
 class AnalysisPanel(Static):
@@ -211,7 +223,9 @@ class TextualWsApp(App):
         yield StatusPanel(id="status")
         with Horizontal(id="middle"):
             yield BidLog(id="bidlog", markup=True, min_width=30, wrap=True)
-            yield RosterPanel(id="roster")
+            with Vertical(id="roster"):
+                yield RosterPanel(id="roster-header")
+                yield RosterTable(id="roster-table")
         yield AnalysisPanel(id="analysis")
         yield NominationTable(id="nominations")
         yield Input(id="command", placeholder="/name | pos QB | sort rec | star | "
@@ -222,13 +236,14 @@ class TextualWsApp(App):
         self.banner = self.query_one("#banner", Banner)
         self.status = self.query_one("#status", StatusPanel)
         self.bidlog = self.query_one("#bidlog", BidLog)
-        self.roster = self.query_one("#roster", RosterPanel)
+        self.roster = self.query_one("#roster-header", RosterPanel)
+        self.roster_table = self.query_one("#roster-table", RosterTable)
         self.analysis = self.query_one("#analysis", AnalysisPanel)
         self.nominations = self.query_one("#nominations", NominationTable)
         self.command = self.query_one("#command", Input)
 
         self.bidlog.border_title = "Bid log (this nomination)"
-        self.roster.border_title = "Your roster"
+        self.query_one("#roster", Vertical).border_title = "Your roster"
         self.analysis.border_title = "Analysis"
         self.nominations.border_title = (
             "Board (up/down, n to nominate, space to star, / to search) -- "
@@ -449,10 +464,10 @@ class TextualWsApp(App):
             for pos, required in config.STARTERS.items()
             if pos != "FLEX"
         )
-        self.roster.roster = tuple(
-            (p.player, p.position, p.price)
-            for p in self.state.purchases if p.team == me
-        )
+        self.roster_table.clear()
+        for p in self.state.purchases:
+            if p.team == me:
+                self.roster_table.add_row(p.player, p.position, f"${p.price}")
 
     def _neediest_position(self) -> str | None:
         """First unfilled starting slot in STARTERS order, which is the order
