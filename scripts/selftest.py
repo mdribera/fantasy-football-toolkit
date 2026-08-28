@@ -238,7 +238,7 @@ def main() -> int:
 
     pool = synthetic_pool()
 
-    two_qb = price_with_replacement(pool, config.REPLACEMENT.QB)   # 30
+    two_qb = price_with_replacement(pool, config.REPLACEMENT.QB)   # 26
     one_qb = price_with_replacement(pool, 14)                      # 10 tm x ~1.4
 
     console.print(f"[bold]Same player pool, priced two ways[/bold] "

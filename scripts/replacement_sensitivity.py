@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-"""T7: sensitivity of the auction board to config.REPLACEMENT's QB baseline.
+"""Sensitivity of the auction board to config.REPLACEMENT's QB baseline.
 
-`config.REPLACEMENT.QB = 30` presumes all 10 teams roster three
-quarterbacks. If the league carries only two, replacement moves to roughly
-QB22, and ESPN's own QB board falls off a cliff around QB26 -- see
-docs/league-analysis.md. This reprices the cached player pool at QB 22, 26,
-and 30 (config.REPLACEMENT itself is left untouched) and reports the swing:
-the top-15 QB board at each baseline, QB's share of the league's $2,000, Josh
-Allen's price and his gap to the rest of the QB board, and the knock-on move
-at RB and WR that comes from the same $1,840 surplus being redistributed.
+QB replacement is the model's most consequential and least certain
+assumption: rostering three quarterbacks per team implies something close
+to QB30, while a room that only carries two implies something closer to
+QB22 -- see docs/league-analysis.md. This reprices the cached player pool
+at QB 22, 26, and 30 (config.REPLACEMENT itself is left untouched) and
+reports the swing: the top-15 QB board at each baseline, QB's share of the
+league's $2,000, Josh Allen's price and his gap to the rest of the QB
+board, and the knock-on move at RB and WR that comes from the same $1,840
+surplus being redistributed.
 
 Analysis only -- writes nothing under data/, and reads the cached player pool
 (data/cache/player_pool.json) rather than pulling from ESPN. Run

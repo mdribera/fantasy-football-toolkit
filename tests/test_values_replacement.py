@@ -20,7 +20,7 @@ def test_replacement_override_does_not_touch_the_live_config():
     pool = [_player(f"QB{i}", "QB", 300 - i * 5) for i in range(40)]
     values.compute_values(pool, positions=("QB",),
                           replacement=replace(config.REPLACEMENT, QB=10))
-    assert config.REPLACEMENT.QB == 30   # untouched
+    assert config.REPLACEMENT.QB == 26   # untouched
 
 
 def test_a_lower_qb_baseline_raises_qb_replacement_points():
