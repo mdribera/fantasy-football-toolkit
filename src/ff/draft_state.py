@@ -130,6 +130,69 @@ class DraftState:
         others = [t for t in self.all_teams() if t != self.my_team]
         return sum(self.budget_left(t) for t in others)
 
+    def slots_left_total(self) -> int:
+        return sum(self.spots_left(t) for t in self.all_teams())
+
+    def biddable_dollars_left(self) -> int:
+        """Every dollar left in the room, minus the $1 every remaining open
+        roster slot will cost no matter what -- the forward-looking analogue
+        of config.BIDDABLE_SURPLUS, which is exactly this number before
+        anything has been sold."""
+        dollars_left = sum(self.budget_left(t) for t in self.all_teams())
+        return dollars_left - self.slots_left_total() * config.MIN_BID
+
+    def remaining_pool_surplus(self, valuations: list) -> int:
+        """Sheet-value surplus of the pool that will actually get drafted
+        with the room's remaining money: the top N undrafted players by
+        value, where N is exactly the number of roster spots left across the
+        league -- the same "only the players who'll actually be rostered
+        compete for the surplus" logic values.compute_values uses to build
+        the sheet in the first place."""
+        taken = self.taken()
+        slots_left = self.slots_left_total()
+        pool = sorted((v for v in valuations if v.name not in taken),
+                      key=lambda v: v.value, reverse=True)[:slots_left]
+        return sum(max(0, v.value - config.MIN_BID) for v in pool)
+
+    def forward_inflation(self, valuations: list) -> float:
+        """Ratio of dollars left in the room to the sheet-value surplus of
+        what's left to buy with them -- the forward-looking counterpart to
+        inflation(). Backward-looking inflation marks remaining players up
+        the moment the room overpays early, at exactly the point depleted
+        budgets mean they'll actually clear under sheet; this is the number
+        that drives the Adjusted column and the live buy/pass call instead.
+        """
+        surplus = self.remaining_pool_surplus(valuations)
+        return (self.biddable_dollars_left() / surplus) if surplus else 1.0
+
+    def forward_inflation_by_position(self, valuations: list,
+                                      tilt_bounds: tuple[float, float] = (0.5, 2.0)
+                                      ) -> dict[str, float]:
+        """Forward-looking inflation, tilted per position.
+
+        Dollars in the room aren't earmarked by position, so there's no way
+        to compute a genuinely separate forward rate per position. Instead
+        this takes the one forward-looking number -- which is exactly right
+        in aggregate -- and skews it by how the room has actually priced
+        that position so far: the ratio of that position's backward rate
+        (inflation_by_position) to the overall backward rate (inflation).
+        That ratio is the signal for "this position is running hot or cold
+        relative to the market as a whole," and it's clamped so one early
+        outlier sale can't swing the whole board. Only positions with at
+        least one sale get a tilt; everything else falls back to the plain
+        forward rate, same as inflation_by_position's own fallback.
+        """
+        base = self.forward_inflation(valuations)
+        overall_backward = self.inflation(valuations)
+        by_position_backward = self.inflation_by_position(valuations)
+        if overall_backward <= 0:
+            return {}
+        low, high = tilt_bounds
+        return {
+            pos: base * max(low, min(high, rate / overall_backward))
+            for pos, rate in by_position_backward.items()
+        }
+
     def taken(self) -> set[str]:
         return {p.player for p in self.purchases}
 

@@ -90,6 +90,23 @@ class FakeWsController:
         return auction.clock_milestone(event.remaining_ms, self._announced)
 
 
+def _stub_closed_league(state, vals) -> None:
+    """Scale state's league-wide slots/dollars down to match the tiny
+    FIXTURE_ROWS pool exactly, so forward_inflation(vals) reads 1.0 with
+    nothing sold -- the same "nothing sold, nothing gained" baseline the
+    real ~600-player board gives by construction (compute_values distributes
+    exactly config.BIDDABLE_SURPLUS across exactly the players that will get
+    drafted). Without this, the fixture's four valued players read as an
+    extreme premium against a real 10-team, $200 bankroll that expects a
+    much deeper board -- true of the fixture, but not what these tests are
+    checking, which is the display wiring, not the forward-inflation math
+    itself (see tests/test_draft_state.py for that)."""
+    state.all_teams = lambda: ["ME"]                            # type: ignore[method-assign]
+    state.spots_left = lambda team: len(vals)                   # type: ignore[method-assign]
+    surplus = state.remaining_pool_surplus(vals)
+    state.budget_left = lambda team: surplus + len(vals)        # type: ignore[method-assign]
+
+
 def _roster_rows(app) -> list[tuple]:
     """Every row currently in the roster DataTable, as plain tuples."""
     return [tuple(app.roster_table.get_row_at(i))
@@ -169,7 +186,8 @@ async def test_clock_state_2_drives_the_countdown(tmp_path):
 
 @pytest.mark.asyncio
 async def test_status_shows_sheet_and_inflation_adjusted_value(tmp_path):
-    app, ws, _ = make_app(tmp_path)
+    app, ws, state = make_app(tmp_path)
+    _stub_closed_league(state, app.vals)
     async with app.run_test() as pilot:
         ws.feed(draft_ws.Bid(4, 3915511, 54, 25000, 12731))
         await app._poll()
@@ -404,7 +422,8 @@ async def test_analysis_names_the_next_equivalent_in_tier(tmp_path):
 
 @pytest.mark.asyncio
 async def test_analysis_verdict_reflects_the_current_high(tmp_path):
-    app, ws, _ = make_app(tmp_path)
+    app, ws, state = make_app(tmp_path)
+    _stub_closed_league(state, app.vals)
     async with app.run_test() as pilot:
         ws.feed(draft_ws.Bid(4, 3915511, 70, 25000, 12731))  # sheet $43
         await app._poll()
@@ -1189,7 +1208,8 @@ async def test_bid_watchdog_clears_when_the_bid_is_confirmed(tmp_path):
 
 @pytest.mark.asyncio
 async def test_board_rows_carry_tier_and_adjusted_value(tmp_path):
-    app, ws, _ = make_app(tmp_path)   # default starred: Justin Jefferson, Kenneth Walker III
+    app, ws, state = make_app(tmp_path)   # default starred: Justin Jefferson, Kenneth Walker III
+    _stub_closed_league(state, app.vals)
     async with app.run_test() as pilot:
         app._reload_board()
         await pilot.pause()

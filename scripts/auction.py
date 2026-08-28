@@ -476,7 +476,7 @@ NOMINATION_BOARD_SORTS = ("rank", "rec", "pos", "tier", "sheet", "adj", "espn", 
 def nomination_board(
     vals: list[values.Valuation],
     state: draft_state.DraftState,
-    inflation: float,
+    inflation: float | dict[str, float],
     *,
     starred: set[str] = frozenset(),
     query: str | None = None,
@@ -486,12 +486,16 @@ def nomination_board(
 ) -> list[BoardRow]:
     """The full available board: every undrafted priced player, ready to
     search, filter and sort. `inflation` is taken as a parameter rather than
-    recomputed here -- callers hold a single draft-wide DraftState.inflation()
-    result and pass it in once, since recomputing it per row is fine at a
-    few dozen rows but not at the full ~600-player board.
+    recomputed here -- callers hold a single draft-wide rate (or per-position
+    rates, from DraftState.forward_inflation_by_position) and pass it in
+    once, since recomputing it per row is fine at a few dozen rows but not at
+    the full ~600-player board. A plain float applies to every position; a
+    dict falls back to the overall forward rate for a position with no entry
+    (not enough sales at that position yet to tilt it).
     """
     taken = {name.lower() for name in state.taken()}
     starred_lower = {name.lower() for name in starred}
+    overall = state.forward_inflation(vals) if isinstance(inflation, dict) else inflation
 
     rows = []
     for v in vals:
@@ -504,7 +508,8 @@ def nomination_board(
         is_starred = v.name.lower() in starred_lower
         if starred_only and not is_starred:
             continue
-        adjusted = max(1, round(v.value * inflation))
+        rate = inflation.get(v.position, overall) if isinstance(inflation, dict) else inflation
+        adjusted = max(1, round(v.value * rate))
         rows.append(BoardRow(
             valuation=v,
             adjusted=adjusted,
@@ -602,9 +607,10 @@ def best_table(state: draft_state.DraftState, vals: list[values.Valuation],
         pool = [v for v in pool if v.position == position.upper()]
     pool = sorted(pool, key=lambda v: v.value, reverse=True)[:limit]
 
-    inflation = state.inflation(vals)
+    overall = state.forward_inflation(vals)
+    by_position = state.forward_inflation_by_position(vals)
     table = Table(title=f"Best available{' -- ' + position.upper() if position else ''} "
-                        f"(market x{inflation:.2f})")
+                        f"(market x{overall:.2f} forward)")
     table.add_column("Player")
     table.add_column("Pos", justify="center")
     table.add_column("Tier", justify="center")
@@ -613,7 +619,8 @@ def best_table(state: draft_state.DraftState, vals: list[values.Valuation],
     table.add_column("Adjusted", justify="right", style="bold")
 
     for v in pool:
-        adjusted = max(1, round(v.value * inflation))
+        rate = by_position.get(v.position, overall)
+        adjusted = max(1, round(v.value * rate))
         table.add_row(v.name, v.position, str(v.tier),
                       f"{v.projected_points:.0f}", f"${v.value}", f"${adjusted}")
     return table

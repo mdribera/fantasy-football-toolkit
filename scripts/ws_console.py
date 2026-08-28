@@ -488,9 +488,16 @@ class TextualWsApp(App):
         return self._last_bid_team_id == config.MY_TEAM_ID
 
     def _adjusted(self, match: values.Valuation | None) -> int:
+        """Market-adjusted price: the forward-looking rate (dollars left in
+        the room over sheet value of what's left to buy with them), tilted
+        by this position's own market read -- not the backward-looking rate,
+        which marks remaining players up at exactly the moment depleted
+        budgets mean they'll actually clear under sheet."""
         if not match:
             return 0
-        return max(1, round(match.value * self.state.inflation(self.vals)))
+        by_position = self.state.forward_inflation_by_position(self.vals)
+        rate = by_position.get(match.position, self.state.forward_inflation(self.vals))
+        return max(1, round(match.value * rate))
 
     def _flash(self, message: str) -> None:
         self.bidlog.write(message)
@@ -650,7 +657,7 @@ class TextualWsApp(App):
         previous_name = (self._board_rows[self.nominations.cursor_row].name
                           if self._board_rows else None)
 
-        inflation = self.state.inflation(self.vals)
+        inflation = self.state.forward_inflation_by_position(self.vals)
         self._board_rows = auction.nomination_board(
             self.vals, self.state, inflation,
             starred=self.starred, query=self._board_query,
