@@ -202,6 +202,20 @@ def test_qb_bye_would_clash_checks_a_candidate_before_buying():
     assert auction.qb_bye_would_clash(state, "ME", QB_BOARD, daniels) is False
 
 
+def test_me_table_footer_still_wants_the_third_qb_after_starters_are_filled():
+    """T8: needs() alone says "all starting slots filled" at two QBs -- the
+    `me` footer (used by both the REST console and --ws's :me command) has
+    to keep pointing at the third one, not declare victory."""
+    state = draft_state.DraftState(my_team="ME")
+    state.record("Josh Allen", "QB", 60, "ME")
+    state.record("Lamar Jackson", "QB", 40, "ME")
+    for pos in ("RB", "RB", "WR", "WR", "TE", "D/ST", "K"):
+        state.record(f"Filler {pos} {state.roster_count('ME')}", pos, 1, "ME")
+    _, footer = auction.me_table(state, QB_BOARD)
+    assert "All starting slots filled" in footer
+    assert "QB x1" in footer
+
+
 def test_qb_bye_would_clash_ignores_non_qb_and_bye_free_players():
     state = draft_state.DraftState(my_team="ME")
     state.record("Josh Allen", "QB", 60, "ME")

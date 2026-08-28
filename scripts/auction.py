@@ -617,8 +617,18 @@ def me_table(state: draft_state.DraftState,
                       f"${value}" if value else "-", f"[{style}]{edge}[/{style}]")
 
     unfilled = {k: v for k, v in state.needs(me).items() if v > 0}
-    footer = ("Still need: " + ", ".join(f"{k} x{v}" for k, v in unfilled.items())
-              if unfilled else "[green]All starting slots filled.[/green]")
+    if unfilled:
+        footer = "Still need: " + ", ".join(f"{k} x{v}" for k, v in unfilled.items())
+    else:
+        # Starting slots filled is not the same as a full bench -- QB
+        # especially, where the third quarterback exists for byes and the
+        # in-season waiver wire is empty.
+        remaining_targets = {k: v for k, v in state.targets(me).items() if v > 0}
+        if remaining_targets:
+            footer = ("[green]All starting slots filled.[/green] Still want: "
+                      + ", ".join(f"{k} x{v}" for k, v in remaining_targets.items()))
+        else:
+            footer = "[green]All starting slots filled.[/green]"
     return table, footer
 
 
