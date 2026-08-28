@@ -1014,6 +1014,36 @@ async def test_bid_watchdog_alerts_when_a_sent_bid_never_gets_confirmed(tmp_path
 
 
 @pytest.mark.asyncio
+async def test_bid_watchdog_does_not_fire_on_a_bid_that_landed_then_got_outbid(tmp_path):
+    """Regression for the 2026-08-27 rehearsal: a $33 bid on Jalen Hurts was
+    sent, landed as the high bid, and was then outbid to $42 inside the
+    watchdog window -- the banner still alleged the $33 was never confirmed.
+    Landing and then losing a bidding war is normal auction behavior, not
+    the silent-failure the watchdog exists to catch."""
+    app, ws, _ = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        ws.feed(draft_ws.Bid(4, 3915511, 32, 25000, 12731))
+        await app._poll()
+        await pilot.pause()
+        await pilot.press("b")                          # sends BID 3915511 33
+        await pilot.pause()
+        assert app._pending_bid is not None
+        # Our bid lands as the high bid...
+        ws.feed(draft_ws.Bid(6, 3915511, 33, 25000, 12000))
+        await app._poll()
+        await pilot.pause()
+        assert app._pending_bid is None                 # confirmed already
+        # ...then a rival outbids us, still inside what would have been the
+        # watchdog window.
+        ws.feed(draft_ws.Bid(3, 3915511, 42, 25000, 11000))
+        await app._poll()
+        await pilot.pause()
+        app._check_bid_watchdog()
+        assert not app.banner.display
+    assert not any("unconfirmed" in str(line) for line in app.bidlog.lines)
+
+
+@pytest.mark.asyncio
 async def test_self_bid_guard_holds_when_my_team_label_diverges_from_config(tmp_path):
     """config.TEAMS[config.MY_TEAM_ID] is 'ME', but state.my_team can be
     overridden (--my-team, or a persisted value) to something else. The

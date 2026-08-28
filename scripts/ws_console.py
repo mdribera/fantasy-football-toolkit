@@ -317,12 +317,15 @@ class TextualWsApp(App):
                 team = config.TEAMS.get(event.team_id, f"TEAM{event.team_id}")
                 self._last_bid_team = team
                 self._last_bid_team_id = event.team_id
+                self._note_bid_confirmation(event.player_id, event.team_id, event.amount)
                 name, _ = self.resolver.resolve(event.player_id)
                 self._flash(f"{team:<7} ${event.amount}  [dim]{name}[/dim]")
             elif isinstance(event, draft_ws.Clock) and event.state == 2:
                 self.status.clock_s = event.remaining_ms // 1000
                 self._last_bid_team = config.TEAMS.get(event.high_bid_team, self._last_bid_team)
                 self._last_bid_team_id = event.high_bid_team
+                self._note_bid_confirmation(event.player_id, event.high_bid_team,
+                                            event.high_bid_amount)
                 milestone = self.ws.milestone(event)
                 if milestone:
                     self._flash(f"[yellow]{milestone}s left[/yellow], "
@@ -388,6 +391,18 @@ class TextualWsApp(App):
 
         self._sync_pointer()
         self._refresh_panels()
+
+    def _note_bid_confirmation(self, player_id: int, team_id: int, amount: int) -> None:
+        """Clear a pending bid the moment it lands, independent of whether
+        it's still the high bid by the time this frame is processed.
+        Without this, `_check_bid_watchdog` only ever looks at the *current*
+        high bid -- so a bid that landed and was outbid a moment later inside
+        the watchdog window reads identically to one that never landed at
+        all, and the watchdog fires a false 'unconfirmed' alert on a bid
+        Mark actually won for a beat."""
+        if (self._pending_bid and self._pending_bid[0] == player_id
+                and team_id == config.MY_TEAM_ID and amount >= self._pending_bid[1]):
+            self._pending_bid = None
 
     def _check_bid_watchdog(self) -> None:
         if self._pending_bid is None:
