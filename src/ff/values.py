@@ -106,10 +106,11 @@ def _espn_avg(player) -> float | None:
     return getattr(player, "espn_avg", None)
 
 
-def replacement_points(players: Sequence, position: str) -> float:
+def replacement_points(players: Sequence, position: str,
+                       replacement: config.ReplacementLevel = config.REPLACEMENT) -> float:
     """Projected points of the player at this position's replacement rank."""
     pool = _positional_pool(players, position)
-    rank = config.REPLACEMENT.rank_for(position)
+    rank = replacement.rank_for(position)
     if not pool:
         return 0.0
     index = min(rank - 1, len(pool) - 1)
@@ -120,11 +121,17 @@ def compute_values(
     players: Sequence,
     positions: Iterable[str] = ("QB", "RB", "WR", "TE", "K", "D/ST"),
     budget_surplus: int = config.BIDDABLE_SURPLUS,
+    replacement: config.ReplacementLevel = config.REPLACEMENT,
 ) -> list[Valuation]:
-    """Price the draftable pool. Returns valuations sorted by value desc."""
+    """Price the draftable pool. Returns valuations sorted by value desc.
+
+    `replacement` defaults to config.REPLACEMENT, the live board's baseline
+    -- pass a different ReplacementLevel to reprice under a what-if without
+    touching the real config (see scripts/replacement_sensitivity.py).
+    """
     positions = list(positions)
 
-    baselines = {pos: replacement_points(players, pos) for pos in positions}
+    baselines = {pos: replacement_points(players, pos, replacement) for pos in positions}
 
     raw: list[Valuation] = []
     for player in players:
