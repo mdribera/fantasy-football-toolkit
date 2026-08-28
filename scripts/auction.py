@@ -151,7 +151,79 @@ def apply_ws_event(pointer: WsAuctionPointer, event: draft_ws.Event) -> WsAuctio
         return pointer
     if isinstance(event, draft_ws.Sold):
         return WsAuctionPointer(None, 0, None)
+    if isinstance(event, draft_ws.Init):
+        # INIT's header carries an in-flight nomination, but which words hold
+        # it wasn't decodable unambiguously across samples -- see
+        # docs/notes/ws-protocol.md. Reset to idle instead of guessing; the
+        # CLOCK frame that follows every INIT within a frame or two restores
+        # it through the branches above.
+        return WsAuctionPointer()
     return pointer
+
+
+@dataclass(frozen=True)
+class ReconcileReport:
+    """What reconcile_init changed, for the console's banner."""
+    added: tuple[draft_state.Purchase, ...]      # sales the console never witnessed
+    corrected: tuple[draft_state.Purchase, ...]  # local team/price overwritten by the server
+    removed: tuple[draft_state.Purchase, ...]    # local purchases the server does not have
+
+
+def reconcile_init(
+    state: draft_state.DraftState,
+    init: draft_ws.InitState,
+    resolver: draft_sync.PlayerResolver,
+) -> ReconcileReport:
+    """Overwrite state's purchases to match INIT's pick table -- the server
+    is authoritative. Matches local purchases by espn_pick_id first, falling
+    back to case-insensitive player name for a hand-typed record() that
+    never got one. Rebuilds the purchase list and saves once rather than
+    going through record_pick per pick, which would mean one atomic file
+    write per sale replayed on a reconnect.
+    """
+    by_pick_id = {p.espn_pick_id: p for p in state.purchases if p.espn_pick_id is not None}
+    by_name = {p.player.lower(): p for p in state.purchases}
+
+    added: list[draft_state.Purchase] = []
+    corrected: list[draft_state.Purchase] = []
+    new_purchases: list[draft_state.Purchase] = []
+    matched: set[int] = set()
+
+    for pick in init.picks:
+        team = draft_state.normalize_team(config.TEAMS.get(pick.team_id, f"TEAM{pick.team_id}"))
+        existing = by_pick_id.get(pick.player_id)
+        name = position = None
+        if existing is None:
+            name, position = resolver.resolve(pick.player_id)
+            existing = by_name.get(name.lower())
+
+        if existing is not None:
+            matched.add(id(existing))
+            if existing.team != team or existing.price != pick.price:
+                fixed = draft_state.Purchase(
+                    existing.player, existing.position, pick.price, team, pick.player_id)
+                corrected.append(fixed)
+                new_purchases.append(fixed)
+            elif existing.espn_pick_id != pick.player_id:
+                # Same team/price, just backfilling the id so next time this
+                # matches on pick_id instead of falling back to name.
+                new_purchases.append(draft_state.Purchase(
+                    existing.player, existing.position, existing.price, existing.team,
+                    pick.player_id))
+            else:
+                new_purchases.append(existing)
+        else:
+            if name is None:
+                name, position = resolver.resolve(pick.player_id)
+            fresh = draft_state.Purchase(name, position, pick.price, team, pick.player_id)
+            added.append(fresh)
+            new_purchases.append(fresh)
+
+    removed = [p for p in state.purchases if id(p) not in matched]
+
+    state.purchases = new_purchases
+    state.save()
+    return ReconcileReport(tuple(added), tuple(corrected), tuple(removed))
 
 
 def clock_milestone(remaining_ms: int, announced: set[int]) -> int | None:

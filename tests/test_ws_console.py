@@ -7,7 +7,9 @@ drained websocket event and what ends up on screen.
 
 from __future__ import annotations
 
+import base64
 import json
+import struct
 
 import pytest
 
@@ -191,6 +193,128 @@ async def test_sold_skips_a_pick_already_entered_by_hand(tmp_path):
         await app._poll()
         await pilot.pause()
     assert len(state.purchases) == 1
+
+
+def _build_init_blob(league_id: int, sales: dict[int, tuple[int, int, int]]) -> str:
+    """pick_number -> (team_id, player_id, price); unlisted picks are unsold.
+    Duplicated from tests/test_draft_ws_parser.py's builder, which is the one
+    validated against the real captures in data/ -- this mirrors the same
+    layout to drive it through the console rather than the raw parser."""
+    header = b"\x00" * 8 + struct.pack(">I", league_id) + b"\x00" * 8
+    records = bytearray()
+    for pick in range(1, 161):
+        team, player, price = sales.get(pick, (0, -1, 0))
+        records += (
+            struct.pack(">iiiiiiiii", 1, 3, league_id, team, pick, player, 0, price, 0)
+            + b"\x00" * 9
+        )
+    blob = header + struct.pack(">I", 160) + bytes(records)
+    return base64.b64encode(blob).decode()
+
+
+@pytest.mark.asyncio
+async def test_init_backfills_a_sale_the_console_never_witnessed(tmp_path):
+    app, ws, state = make_app(tmp_path)
+    blob = _build_init_blob(999, {1: (6, 3915511, 54)})  # team 6 = ME
+    async with app.run_test() as pilot:
+        ws.feed(draft_ws.Init(blob))
+        await app._poll()
+        await pilot.pause()
+    assert len(state.purchases) == 1
+    assert state.purchases[0].player == "Bijan Robinson"
+    assert state.purchases[0].team == "ME"
+    assert state.purchases[0].price == 54
+
+
+@pytest.mark.asyncio
+async def test_init_backfill_refreshes_the_roster_panel(tmp_path):
+    app, ws, state = make_app(tmp_path)
+    blob = _build_init_blob(999, {1: (6, 3915511, 54)})
+    async with app.run_test() as pilot:
+        ws.feed(draft_ws.Init(blob))
+        await app._poll()
+        await pilot.pause()
+        assert app.roster.budget_left == 146
+        assert ("Bijan Robinson", "RB", 54) in app.roster.roster
+
+
+@pytest.mark.asyncio
+async def test_init_with_only_additions_shows_a_non_alert_banner(tmp_path):
+    app, ws, state = make_app(tmp_path)
+    blob = _build_init_blob(999, {1: (6, 3915511, 54)})
+    async with app.run_test() as pilot:
+        ws.feed(draft_ws.Init(blob))
+        await app._poll()
+        await pilot.pause()
+        assert app.banner.display
+        assert not app.banner.has_class("alert")
+
+
+@pytest.mark.asyncio
+async def test_init_conflict_overwrites_local_state_and_alerts(tmp_path):
+    app, ws, state = make_app(tmp_path)
+    state.record("Bijan Robinson", "RB", 40, "CCT")  # local: wrong team/price
+    blob = _build_init_blob(999, {1: (6, 3915511, 54)})  # server: ME, $54
+    async with app.run_test() as pilot:
+        ws.feed(draft_ws.Init(blob))
+        await app._poll()
+        await pilot.pause()
+        assert app.banner.display
+        assert app.banner.has_class("alert")
+    assert len(state.purchases) == 1
+    assert state.purchases[0].team == "ME"
+    assert state.purchases[0].price == 54
+
+
+@pytest.mark.asyncio
+async def test_init_removes_a_local_purchase_the_server_does_not_have(tmp_path):
+    app, ws, state = make_app(tmp_path)
+    state.record("Ghost Player", "RB", 5, "ME")
+    blob = _build_init_blob(999, {})  # nothing sold according to the server
+    async with app.run_test() as pilot:
+        ws.feed(draft_ws.Init(blob))
+        await app._poll()
+        await pilot.pause()
+        assert app.banner.display
+        assert app.banner.has_class("alert")
+    assert state.purchases == []
+
+
+@pytest.mark.asyncio
+async def test_init_with_no_changes_stays_silent(tmp_path):
+    app, ws, state = make_app(tmp_path)
+    state.purchases.append(draft_state.Purchase("Bijan Robinson", "RB", 54, "ME", 3915511))
+    blob = _build_init_blob(999, {1: (6, 3915511, 54)})
+    async with app.run_test() as pilot:
+        ws.feed(draft_ws.Init(blob))
+        await app._poll()
+        await pilot.pause()
+        assert not app.banner.display
+
+
+@pytest.mark.asyncio
+async def test_init_undecodable_blob_alerts_instead_of_crashing(tmp_path):
+    app, ws, state = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        ws.feed(draft_ws.Init("short"))
+        await app._poll()
+        await pilot.pause()
+        assert app.banner.display
+        assert app.banner.has_class("alert")
+
+
+@pytest.mark.asyncio
+async def test_init_backs_up_state_before_reconciling(tmp_path):
+    app, ws, state = make_app(tmp_path)
+    state.record("Ghost Player", "RB", 5, "ME")
+    blob = _build_init_blob(999, {})
+    async with app.run_test() as pilot:
+        ws.feed(draft_ws.Init(blob))
+        await app._poll()
+        await pilot.pause()
+    backup = state.state_path.with_suffix(".json.bak")
+    assert backup.exists()
+    assert "Ghost Player" in backup.read_text()
 
 
 @pytest.mark.asyncio

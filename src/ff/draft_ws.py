@@ -14,8 +14,11 @@ frame shape not yet seen.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import re
+import struct
 import threading
 import time
 import urllib.parse
@@ -36,7 +39,7 @@ class Autodraft:
 
 @dataclass(frozen=True)
 class Init:
-    blob: str  # base64, undecoded -- full decode is a stretch goal, see the plan
+    blob: str  # base64; see parse_init_state() for the decoded pick table
 
 
 @dataclass(frozen=True)
@@ -237,9 +240,9 @@ def parse_frame(raw: str) -> Event:
             team_id, enabled = fields
             return Autodraft(int(team_id), _bool(enabled))
         if kind == "INIT":
-            # The blob itself can apparently contain literal spaces, so
-            # reassemble it rather than requiring exactly one field.
-            return Init(" ".join(fields))
+            # INIT <base64> <2048 literal '#' chars>. The '#' run is ESPN's
+            # own padding, not part of the blob -- field 0 is the whole thing.
+            return Init(fields[0] if fields else "")
         if kind == "TOKEN":
             (token,) = fields
             game_id, league_id, team_id, swid, session_id = token.split(":")
@@ -335,6 +338,69 @@ def parse_join_url(url: str) -> tuple[str, str]:
     except (KeyError, IndexError) as exc:
         raise ValueError(f"Could not find leagueId/teamId in the join URL: {exc}") from exc
     return league_id, team_id
+
+
+# --- INIT's pick table -----------------------------------------------------
+# INIT's blob carries the room's complete state, but only the pick table is
+# decoded here: the full 160-slot roster (config.NUM_TEAMS * ROSTER_SIZE),
+# which is what reconnect reconciliation needs. See docs/notes/ws-protocol.md
+# for how this layout was confirmed against real captures, and why the
+# in-flight nomination in INIT's header is deliberately not decoded (the
+# CLOCK frame that follows every INIT already covers it unambiguously).
+
+_PICK_RECORD_STRIDE = 45  # bytes per slot; confirmed against real captures
+
+
+@dataclass(frozen=True)
+class InitPick:
+    pick_number: int
+    team_id: int
+    player_id: int
+    price: int
+
+
+@dataclass(frozen=True)
+class InitState:
+    league_id: int
+    picks: tuple[InitPick, ...]  # completed sales only -- unsold slots are dropped
+
+
+def parse_init_state(blob: str) -> InitState | None:
+    """Decode INIT's base64 blob into the room's full pick table.
+
+    Returns None rather than raising on anything short of a fully validated
+    160-slot table -- a partial or misaligned decode must never look like a
+    trustworthy one, since the caller uses this to overwrite local state.
+    """
+    padded = blob + "=" * (-len(blob) % 4)
+    try:
+        raw = base64.b64decode(padded, validate=True)
+    except (binascii.Error, ValueError):
+        return None
+    if len(raw) < 12:
+        return None
+    league_id = struct.unpack(">I", raw[8:12])[0]
+    slot_count = config.NUM_TEAMS * config.ROSTER_SIZE
+    signature = struct.pack(">iiI", 1, 3, league_id)
+    needle = struct.pack(">I", slot_count) + signature
+    start = raw.find(needle)
+    if start == -1:
+        return None
+    table_start = start + 4  # skip the slot-count prefix just matched
+    table_end = table_start + slot_count * _PICK_RECORD_STRIDE
+    if table_end > len(raw):
+        return None
+    picks = []
+    for slot in range(slot_count):
+        offset = table_start + slot * _PICK_RECORD_STRIDE
+        record = raw[offset:offset + _PICK_RECORD_STRIDE]
+        if record[:12] != signature:
+            return None  # not actually a uniform table at this offset
+        _, _, _, team_id, pick_number, player_id, _field3, price, _nominator = \
+            struct.unpack(">iiiiiiiii", record[:36])
+        if player_id != -1:
+            picks.append(InitPick(pick_number, team_id, player_id, price))
+    return InitState(league_id, tuple(picks))
 
 
 # --- live client ----------------------------------------------------------

@@ -48,6 +48,16 @@ def test_clock_state_3_leaves_pointer_unchanged():
     assert updated is pointer
 
 
+def test_init_resets_pointer_to_idle():
+    # INIT's header carries an in-flight nomination, but which words hold it
+    # wasn't decodable unambiguously across samples -- see
+    # docs/notes/ws-protocol.md. Reset to idle rather than guess; the CLOCK
+    # frame that follows every INIT within a frame or two restores it.
+    pointer = auction.WsAuctionPointer(3915511, 43, 6)
+    updated = auction.apply_ws_event(pointer, draft_ws.Init("somejunk"))
+    assert updated == auction.WsAuctionPointer()
+
+
 def test_unrelated_event_leaves_pointer_unchanged():
     pointer = auction.WsAuctionPointer(3915511, 43, 6)
     updated = auction.apply_ws_event(pointer, draft_ws.BidAck(6, 4426348, 56))
@@ -228,3 +238,120 @@ def test_load_state_fresh_without_an_existing_file_does_not_create_a_backup(tmp_
     auction.load_state(fresh=True, path=path)
     backup = path.with_suffix(".json.bak")
     assert not backup.exists()
+
+
+# --- reconcile_init -------------------------------------------------------
+
+class _FakeResolver:
+    """Stands in for draft_sync.PlayerResolver: a fixed id -> (name,
+    position) map, with no live-API fallback, so reconcile tests never touch
+    the network."""
+
+    def __init__(self, by_id: dict[int, tuple[str, str]]):
+        self._by_id = by_id
+
+    def resolve(self, player_id: int) -> tuple[str, str]:
+        return self._by_id.get(player_id, (f"ESPN#{player_id}", "?"))
+
+
+RESOLVER = _FakeResolver({
+    4241478: ("Bijan Robinson", "RB"),
+    4239993: ("Puka Nacua", "WR"),
+})
+
+
+def _init(picks):
+    return draft_ws.InitState(league_id=999, picks=tuple(picks))
+
+
+def test_reconcile_init_adds_sales_the_console_never_witnessed(tmp_path):
+    state = draft_state.DraftState(state_path=tmp_path / "draft-state.json")
+    init = _init([draft_ws.InitPick(pick_number=1, team_id=2, player_id=4241478, price=10)])
+
+    report = auction.reconcile_init(state, init, RESOLVER)
+
+    assert len(report.added) == 1
+    added = report.added[0]
+    assert (added.player, added.team, added.price) == ("Bijan Robinson", "AUBREY", 10)
+    assert report.corrected == ()
+    assert report.removed == ()
+    assert [p.player for p in state.purchases] == ["Bijan Robinson"]
+
+
+def test_reconcile_init_is_a_no_op_when_state_already_matches(tmp_path):
+    path = tmp_path / "draft-state.json"
+    state = draft_state.DraftState(
+        purchases=[draft_state.Purchase("Bijan Robinson", "RB", 10, "AUBREY", 4241478)],
+        state_path=path,
+    )
+    init = _init([draft_ws.InitPick(pick_number=1, team_id=2, player_id=4241478, price=10)])
+
+    report = auction.reconcile_init(state, init, RESOLVER)
+
+    assert report == auction.ReconcileReport((), (), ())
+    assert len(state.purchases) == 1
+
+
+def test_reconcile_init_overwrites_a_conflicting_local_purchase(tmp_path):
+    path = tmp_path / "draft-state.json"
+    state = draft_state.DraftState(
+        purchases=[draft_state.Purchase("Bijan Robinson", "RB", 8, "ME", 4241478)],
+        state_path=path,
+    )
+    init = _init([draft_ws.InitPick(pick_number=1, team_id=2, player_id=4241478, price=10)])
+
+    report = auction.reconcile_init(state, init, RESOLVER)
+
+    assert len(report.corrected) == 1
+    fixed = report.corrected[0]
+    assert (fixed.team, fixed.price) == ("AUBREY", 10)
+    assert len(state.purchases) == 1
+    assert (state.purchases[0].team, state.purchases[0].price) == ("AUBREY", 10)
+
+
+def test_reconcile_init_removes_a_purchase_the_server_does_not_have(tmp_path):
+    path = tmp_path / "draft-state.json"
+    state = draft_state.DraftState(
+        purchases=[draft_state.Purchase("Ghost Player", "RB", 5, "ME")],
+        state_path=path,
+    )
+    init = _init([])  # nothing sold according to the server
+
+    report = auction.reconcile_init(state, init, RESOLVER)
+
+    assert len(report.removed) == 1
+    assert report.removed[0].player == "Ghost Player"
+    assert state.purchases == []
+
+
+def test_reconcile_init_matches_a_hand_typed_purchase_by_name(tmp_path):
+    # state.record() (the ":record"/plain-typed path) leaves espn_pick_id
+    # unset -- reconcile must still recognize it as the same sale rather
+    # than treating it as both a duplicate add and a stale local extra.
+    path = tmp_path / "draft-state.json"
+    state = draft_state.DraftState(state_path=path)
+    state.record("Bijan Robinson", "RB", 10, "AUBREY")
+    init = _init([draft_ws.InitPick(pick_number=1, team_id=2, player_id=4241478, price=10)])
+
+    report = auction.reconcile_init(state, init, RESOLVER)
+
+    assert report.added == ()
+    assert report.corrected == ()
+    assert report.removed == ()
+    assert len(state.purchases) == 1
+    assert state.purchases[0].espn_pick_id == 4241478
+
+
+def test_reconcile_init_saves_state_exactly_once(tmp_path, monkeypatch):
+    path = tmp_path / "draft-state.json"
+    state = draft_state.DraftState(state_path=path)
+    init = _init([
+        draft_ws.InitPick(pick_number=1, team_id=2, player_id=4241478, price=10),
+        draft_ws.InitPick(pick_number=2, team_id=6, player_id=4239993, price=7),
+    ])
+    calls = []
+    monkeypatch.setattr(state, "save", lambda *a, **k: calls.append(1))
+
+    auction.reconcile_init(state, init, RESOLVER)
+
+    assert calls == [1]

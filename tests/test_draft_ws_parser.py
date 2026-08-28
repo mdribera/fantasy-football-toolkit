@@ -6,6 +6,8 @@ each fixture settles.
 
 from __future__ import annotations
 
+import base64
+import struct
 from pathlib import Path
 
 import pytest
@@ -119,6 +121,107 @@ def test_init_frame_is_decodable_as_a_blob():
     event = draft_ws.parse_frame("INIT AAAABBBB\n")
     assert isinstance(event, draft_ws.Init)
     assert event.blob == "AAAABBBB"
+
+
+def test_init_frame_drops_the_trailing_hash_padding():
+    # Real INIT frames are "INIT <base64> <2048 literal '#' chars>" -- the
+    # padding is ESPN's own, not part of the blob. See docs/notes/ws-protocol.md.
+    event = draft_ws.parse_frame("INIT AAAABBBB " + "#" * 2048 + "\n")
+    assert event == draft_ws.Init("AAAABBBB")
+
+
+def _build_init_blob(league_id: int, sales: dict[int, tuple[int, int, int]]) -> str:
+    """Build a synthetic 160-slot pick table blob. `sales` maps pick number
+    (1..160) to (team_id, player_id, price); unlisted picks are unsold.
+    Mirrors the record layout confirmed against
+    data/ws-log-1787863742.jsonl's two real INIT frames."""
+    header = b"\x00" * 8 + struct.pack(">I", league_id) + b"\x00" * 8
+    records = bytearray()
+    for pick in range(1, 161):
+        team, player, price = sales.get(pick, (0, -1, 0))
+        record = (
+            struct.pack(">iiiiiiiii", 1, 3, league_id, team, pick, player, 0, price, 0)
+            + b"\x00" * 9
+        )
+        assert len(record) == 45
+        records += record
+    blob = header + struct.pack(">I", 160) + bytes(records)
+    return base64.b64encode(blob).decode()
+
+
+def test_parse_init_state_extracts_completed_sales():
+    blob = _build_init_blob(1613702335, {
+        53: (2, 4241478, 10),
+        66: (10, 4239993, 7),
+    })
+    state = draft_ws.parse_init_state(blob)
+    assert state is not None
+    assert state.league_id == 1613702335
+    assert set(state.picks) == {
+        draft_ws.InitPick(pick_number=53, team_id=2, player_id=4241478, price=10),
+        draft_ws.InitPick(pick_number=66, team_id=10, player_id=4239993, price=7),
+    }
+
+
+def test_parse_init_state_omits_unsold_picks():
+    blob = _build_init_blob(1613702335, {1: (2, 4241478, 10)})
+    state = draft_ws.parse_init_state(blob)
+    assert state is not None
+    assert len(state.picks) == 1
+
+
+def test_parse_init_state_returns_none_for_undecodable_blob():
+    assert draft_ws.parse_init_state("not valid base64!!") is None
+
+
+def test_parse_init_state_returns_none_for_too_short_blob():
+    assert draft_ws.parse_init_state(base64.b64encode(b"short").decode()) is None
+
+
+def _init_blobs(path: Path) -> list[str]:
+    return [
+        event.blob
+        for msg in draft_ws.iter_frames(path)
+        if isinstance(event := draft_ws.parse_frame(msg), draft_ws.Init)
+    ]
+
+
+def test_every_real_init_frame_decodes_or_is_deliberately_rejected():
+    # ws-live-test.jsonl's INIT is truncated (195 base64 chars, not a
+    # multiple of 4) and must come back None rather than raise or silently
+    # decode a bogus table.
+    for path in DATA.glob("ws-*.jsonl"):
+        if path.name == "ws-live-test.jsonl":
+            continue
+        for blob in _init_blobs(path):
+            state = draft_ws.parse_init_state(blob)
+            assert state is not None, f"{path}: INIT failed to decode"
+            assert len(state.picks) <= 160
+
+    for blob in _init_blobs(DATA / "ws-live-test.jsonl"):
+        assert draft_ws.parse_init_state(blob) is None
+
+
+def test_reconnect_capture_init_matches_its_own_sold_frames():
+    # ws-log-1787863742.jsonl is the one capture with two INIT frames on a
+    # single connection (a forced disconnect/reconnect mid-draft). Its
+    # second INIT must reproduce every SOLD frame the session logged, team
+    # and price exact -- this is the same cross-check that confirmed the
+    # pick-table layout in the first place.
+    path = DATA / "ws-log-1787863742.jsonl"
+    sold = {}
+    for msg in draft_ws.iter_frames(path):
+        event = draft_ws.parse_frame(msg)
+        if isinstance(event, draft_ws.Sold):
+            sold[event.player_id] = (event.team_id, event.price)
+
+    blobs = _init_blobs(path)
+    assert len(blobs) == 2
+    final = draft_ws.parse_init_state(blobs[-1])
+    assert final is not None
+    by_player = {p.player_id: (p.team_id, p.price) for p in final.picks}
+    for player_id, expected in sold.items():
+        assert by_player[player_id] == expected
 
 
 def test_parse_frame_empty_string_is_an_error():

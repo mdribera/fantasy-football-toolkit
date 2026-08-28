@@ -186,6 +186,8 @@ class TextualWsApp(App):
         self._last_bid_team = ""
         self._last_bid_team_id: int | None = None
         self._pending_bid: tuple[int, int, float] | None = None
+        self._init_backed_up = False  # back up draft-state.json once, before
+                                       # the first INIT reconcile may prune it
 
     def compose(self) -> ComposeResult:
         yield Banner(id="banner")
@@ -319,6 +321,33 @@ class TextualWsApp(App):
             elif isinstance(event, draft_ws.WsError):
                 self._flash(f"[yellow]unparsed frame:[/yellow] {event.raw!r} "
                             f"({event.reason})")
+            elif isinstance(event, draft_ws.Init):
+                init = draft_ws.parse_init_state(event.blob)
+                if init is None:
+                    message = ("INIT frame could not be decoded -- roster may be "
+                                "stale until the next successful reconnect.")
+                    self.banner.show(message, alert=True)
+                    self._flash(f"[red]{message}[/red]")
+                else:
+                    self._backup_state_once()
+                    report = auction.reconcile_init(self.state, init, self.resolver)
+                    taken = {name.lower() for name in self.state.taken()}
+                    if report.corrected or report.removed:
+                        message = (
+                            f"Reconciled with the server: {len(report.added)} added, "
+                            f"{len(report.corrected)} corrected, {len(report.removed)} "
+                            "removed -- local state and the server had diverged. "
+                            "Check your roster.")
+                        self.banner.show(message, alert=True)
+                        self._flash(f"[red]{message}[/red]")
+                    elif report.added:
+                        message = (f"Reconciled with the server: added "
+                                   f"{len(report.added)} sale(s) recorded while "
+                                   "disconnected.")
+                        self.banner.show(message)
+                        self._flash(f"[green]{message}[/green]")
+                    if report.added or report.removed:
+                        self.call_later(self._reload_nominations)
 
         self._sync_pointer()
         self._refresh_panels()
@@ -582,6 +611,19 @@ class TextualWsApp(App):
                         "if urgent.")
         else:
             self._flash(f"[green]Nominated {match.name} at $1.[/green]")
+
+    def _backup_state_once(self) -> None:
+        """Back up draft-state.json before the first INIT reconcile of this
+        session -- reconcile can delete a local purchase the server doesn't
+        have, and that must be recoverable by hand if the decode was ever
+        wrong. Same convention as load_state's --fresh backup."""
+        if self._init_backed_up:
+            return
+        self._init_backed_up = True
+        path = self.state.state_path
+        if path.exists():
+            backup = path.with_suffix(path.suffix + ".bak")
+            backup.write_text(path.read_text())
 
     def _raise_turn_alert(self) -> None:
         """An idle nomination turn is an unattended-purchase risk, so this
