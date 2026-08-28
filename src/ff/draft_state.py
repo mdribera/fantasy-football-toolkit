@@ -213,6 +213,18 @@ class DraftState:
             out[pos] = max(0, required - counts.get(pos, 0))
         return out
 
+    def targets(self, team: str) -> dict[str, int]:
+        """Full-bench slots still unfilled -- config.ROSTER_TARGETS, which
+        goes beyond the starting lineup (a third QB for byes, bench depth at
+        RB/WR/TE). needs() alone reports "all starting slots filled" at two
+        quarterbacks, when the league's most important roster rule is that a
+        team should carry three."""
+        counts = self.position_counts(team)
+        return {
+            pos: max(0, target - counts.get(pos, 0))
+            for pos, target in config.ROSTER_TARGETS.items()
+        }
+
     # --- persistence -----------------------------------------------------
     def record(self, player: str, position: str, price: int, team: str) -> None:
         self.purchases.append(Purchase(player, position, price, normalize_team(team)))

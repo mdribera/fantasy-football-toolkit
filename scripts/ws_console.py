@@ -127,15 +127,27 @@ class RosterPanel(Static):
     budget_left = reactive(config.SALARY_CAP)
     spots_left = reactive(config.ROSTER_SIZE)
     max_bid_amount = reactive(0)
-    slots = reactive(())    # tuple[tuple[str, int, int], ...] pos, have, need
+    slots = reactive(())    # tuple[tuple[str, int, int, int], ...] pos, have, need, target
+
+    def _slot_label(self, pos: str, have: int, need: int, target: int) -> str:
+        color = "green" if have >= need else "yellow"
+        label = f"{pos} {have}/{need}"
+        # A starting requirement met is not the same as a full bench -- QB
+        # especially, where the third quarterback exists for byes and the
+        # in-season waiver wire is empty, so this can't wait until the
+        # position "needs" attention the way needs() alone would report.
+        if have >= need and have < target:
+            hint = "3rd for byes" if pos == "QB" else f"want {target}"
+            label += f" ({hint})"
+        return f"[{color}]{label}[/]"
 
     def render(self) -> Text:
         lines = [
             f"[bold]Budget: ${self.budget_left}[/bold] / ${config.SALARY_CAP}   "
             f"{self.spots_left} spots   max bid ${self.max_bid_amount}",
             "  ".join(
-                f"[{'green' if have >= need else 'yellow'}]{pos} {have}/{need}[/]"
-                for pos, have, need in self.slots
+                self._slot_label(pos, have, need, target)
+                for pos, have, need, target in self.slots
             ) or "[dim]no starters required[/dim]",
         ]
         return Text.from_markup("\n".join(lines))
@@ -512,8 +524,9 @@ class TextualWsApp(App):
         self.roster.budget_left = self.state.budget_left(me)
         self.roster.spots_left = self.state.spots_left(me)
         self.roster.max_bid_amount = self.state.max_bid(me)
+        targets = config.ROSTER_TARGETS
         self.roster.slots = tuple(
-            (pos, counts.get(pos, 0), required)
+            (pos, counts.get(pos, 0), required, targets.get(pos, required))
             for pos, required in config.STARTERS.items()
             if pos != "FLEX"
         )
@@ -525,8 +538,16 @@ class TextualWsApp(App):
     def _neediest_position(self) -> str | None:
         """First unfilled starting slot in STARTERS order, which is the order
         'need' already iterates. Deterministic, and good enough: the panel is
-        a pointer at where your dollars have to go, not a ranking."""
-        for pos, count in self.state.needs(self.state.my_team).items():
+        a pointer at where your dollars have to go, not a ranking. Falls
+        through to an unfilled bench target (config.ROSTER_TARGETS) once every
+        starting slot is covered -- otherwise a team sitting at two
+        quarterbacks reads as needing nothing, when the third for byes is the
+        most important target left."""
+        me = self.state.my_team
+        for pos, count in self.state.needs(me).items():
+            if count > 0:
+                return pos
+        for pos, count in self.state.targets(me).items():
             if count > 0:
                 return pos
         return None

@@ -36,6 +36,21 @@ STARTERS = {
 }
 FLEX_ELIGIBLE = ("RB", "WR", "TE")
 
+# A realistic full bench, not just the starting lineup -- the number a team
+# should actually target rostering by the end of the draft. QB=3 is the
+# league's most important roster rule and the one STARTERS alone can't
+# express: two starters plus a bye/injury hedge, since the in-season QB
+# waiver wire is empty (see league-analysis.md). The rest is bench depth
+# beyond the starting requirement.
+ROSTER_TARGETS = {
+    "QB": 3,
+    "RB": 4,
+    "WR": 5,
+    "TE": 2,
+    "D/ST": 1,
+    "K": 1,
+}
+
 # Per-team positional caps enforced by ESPN.
 POSITION_MAX = {
     "QB": 4,

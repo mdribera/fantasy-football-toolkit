@@ -380,8 +380,8 @@ async def test_roster_panel_tracks_budget_and_slots(tmp_path):
         assert app.roster.budget_left == 148
         assert app.roster.spots_left == 15
         assert ("Justin Jefferson", "WR", "$52") in _roster_rows(app)
-        assert ("WR", 1, 2) in app.roster.slots
-        assert ("QB", 0, 2) in app.roster.slots
+        assert ("WR", 1, 2, 5) in app.roster.slots
+        assert ("QB", 0, 2, 3) in app.roster.slots
 
 
 @pytest.mark.asyncio
@@ -460,6 +460,36 @@ async def test_analysis_best_remaining_targets_the_neediest_position(tmp_path):
         # QB is the first unfilled slot in STARTERS order and the board has none.
         assert app._neediest_position() == "QB"
         assert "QB" in app.analysis.best_line
+
+
+@pytest.mark.asyncio
+async def test_neediest_position_falls_through_to_the_third_qb(tmp_path):
+    """T8: needs() alone reports "all starting slots filled" at two
+    quarterbacks -- the console has to keep pointing at the third QB (for
+    byes) once starters are covered, since the in-season waiver wire is
+    empty and that third QB has to come from the auction."""
+    app, ws, state = make_app(tmp_path)
+    state.record("Josh Allen", "QB", 60, "ME")
+    state.record("Lamar Jackson", "QB", 40, "ME")
+    for pos in ("RB", "RB", "WR", "WR", "TE", "D/ST", "K"):
+        state.record(f"Filler {pos} {state.roster_count('ME')}", pos, 1, "ME")
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert all(count == 0 for count in state.needs("ME").values())  # starters covered
+        assert app._neediest_position() == "QB"    # but the target isn't
+
+
+@pytest.mark.asyncio
+async def test_roster_header_flags_the_third_qb_for_byes(tmp_path):
+    app, ws, state = make_app(tmp_path)
+    state.record("Josh Allen", "QB", 60, "ME")
+    state.record("Lamar Jackson", "QB", 40, "ME")
+    async with app.run_test() as pilot:
+        app._refresh_panels()
+        await pilot.pause()
+        text = str(app.roster.render())
+        assert "QB 2/2" in text
+        assert "3rd for byes" in text
 
 
 @pytest.mark.asyncio

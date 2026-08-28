@@ -107,6 +107,17 @@ def test_forward_inflation_by_position_tilts_by_the_backward_read():
     assert round(rates["QB"], 6) == round(base * (backward["QB"] / overall_backward), 6)
 
 
+def test_targets_reports_the_full_bench_not_just_starters():
+    """needs() alone reports "0 unfilled" for QB at two -- targets() is the
+    one that keeps pointing at the third quarterback for byes, per
+    config.ROSTER_TARGETS."""
+    state = draft_state.DraftState(my_team="ME")
+    state.record("Josh Allen", "QB", 60, "ME")
+    state.record("Lamar Jackson", "QB", 40, "ME")
+    assert state.needs("ME")["QB"] == 0
+    assert state.targets("ME")["QB"] == 1
+
+
 def test_forward_inflation_by_position_omits_positions_with_no_sales():
     """No sales at a position means no backward signal to tilt by --
     callers fall back to the plain forward rate for it, mirroring

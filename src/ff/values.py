@@ -199,14 +199,7 @@ def assign_tiers(valuations: list[Valuation], gap_ratio: float = 0.12) -> list[V
 def budget_plan(valuations: list[Valuation]) -> dict:
     """What a single team's $200 should look like, given the priced market."""
     plan: dict[str, dict] = {}
-    for pos, slots in (
-        ("QB", 3),   # 2 starters + a bye/injury hedge; the wire will be empty
-        ("RB", 4),
-        ("WR", 5),
-        ("TE", 2),
-        ("K", 1),
-        ("D/ST", 1),
-    ):
+    for pos, slots in config.ROSTER_TARGETS.items():
         pool = sorted(
             [v for v in valuations if v.position == pos],
             key=lambda v: v.value,
