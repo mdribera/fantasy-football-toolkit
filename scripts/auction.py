@@ -380,6 +380,10 @@ class WsController:
     def drain_alerts(self) -> list[str]:
         return self.client.drain_alerts()
 
+    @property
+    def connected(self) -> bool:
+        return self.client.connected
+
     def milestone(self, event: draft_ws.Clock) -> int | None:
         return clock_milestone(event.remaining_ms, self._announced)
 

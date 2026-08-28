@@ -63,6 +63,7 @@ class FakeWsController:
         self.client = FakeClient()
         self.pointer = auction.WsAuctionPointer()
         self.alerts: list[str] = []
+        self.connected = False
         self._pending: list = []
         self._announced: set[int] = set()
         self.fail_with: Exception | None = None
@@ -490,6 +491,41 @@ async def test_a_watchdog_alert_survives_a_sold_event(tmp_path):
         await pilot.pause()
         assert app.banner.display
         ws.feed(draft_ws.Sold(4, 3915511, 1, 54, 0))
+        await app._poll()
+        await pilot.pause()
+        assert app.banner.display
+        assert app.banner.has_class("alert")
+
+
+@pytest.mark.asyncio
+async def test_disconnect_banner_clears_once_reconnected(tmp_path):
+    app, ws, _ = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        ws.alerts.append(f"{draft_ws.DISCONNECT_ALERT_PREFIX} -- reconnecting (attempt 1)")
+        await app._poll()
+        await pilot.pause()
+        assert app.banner.display
+        assert app.banner.has_class("alert")
+
+        ws.connected = True
+        await app._poll()
+        await pilot.pause()
+        assert not app.banner.display
+
+
+@pytest.mark.asyncio
+async def test_disconnect_banner_does_not_wipe_a_later_alert_on_reconnect(tmp_path):
+    app, ws, _ = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        ws.alerts.append(f"{draft_ws.DISCONNECT_ALERT_PREFIX} -- reconnecting (attempt 1)")
+        await app._poll()
+        await pilot.pause()
+
+        ws.alerts.append("no frames received in 45s -- forcing reconnect")
+        await app._poll()
+        await pilot.pause()
+
+        ws.connected = True
         await app._poll()
         await pilot.pause()
         assert app.banner.display

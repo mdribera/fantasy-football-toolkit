@@ -112,7 +112,9 @@ def test_watchdog_forces_reconnect_after_silence(patch_websocket, cred, tmp_path
 
     assert client.reconnect_count >= 1
     assert len(FakeWebSocketApp.instances) >= 2
-    assert any("forcing reconnect" in a for a in client.drain_alerts())
+    alerts = client.drain_alerts()
+    assert any("forcing reconnect" in a for a in alerts)
+    assert any(a.startswith(draft_ws.DISCONNECT_ALERT_PREFIX) for a in alerts)
 
 
 def test_watchdog_does_not_reconnect_while_frames_keep_arriving(patch_websocket, cred, tmp_path):

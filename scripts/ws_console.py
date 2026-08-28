@@ -33,13 +33,27 @@ class Banner(Static):
     """Full-width alert line. Hidden until something needs to be impossible
     to miss: your nomination turn, or a watchdog/reconnect alert."""
 
-    def show(self, message: str, alert: bool = False) -> None:
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._disconnect = False
+
+    def show(self, message: str, alert: bool = False, disconnect: bool = False) -> None:
         self.update(Text(message))
         self.set_class(alert, "alert")
         self.display = True
+        self._disconnect = disconnect
 
     def hide(self) -> None:
         self.display = False
+        self._disconnect = False
+
+    def clear_disconnect(self) -> None:
+        """Hide the banner, but only if it's still showing the disconnect
+        alert specifically -- any other alert that has since taken the
+        banner (a watchdog trip, a bid confirmation failure, a reconcile
+        mismatch) must persist until manually checked."""
+        if self._disconnect:
+            self.hide()
 
 
 class StatusPanel(Static):
@@ -251,8 +265,12 @@ class TextualWsApp(App):
 
     def _drain(self) -> None:
         for alert in self.ws.drain_alerts():
-            self.banner.show(alert, alert=True)
+            disconnect = alert.startswith(draft_ws.DISCONNECT_ALERT_PREFIX)
+            self.banner.show(alert, alert=True, disconnect=disconnect)
             self._flash(f"[red]{alert}[/red]")
+
+        if self.ws.connected:
+            self.banner.clear_disconnect()
 
         events = self.ws.drain()
         if not events:

@@ -405,6 +405,11 @@ def parse_init_state(blob: str) -> InitState | None:
 
 # --- live client ----------------------------------------------------------
 
+# Shared with the console so it can pick this one alert back out of the
+# drained list and clear it once `connected` is true again, without
+# weakening any other alert (which stays until manually checked).
+DISCONNECT_ALERT_PREFIX = "disconnected from the draft room"
+
 
 class DraftRoomClient:
     """Background-threaded websocket connection to the live draft room, in
@@ -498,7 +503,7 @@ class DraftRoomClient:
             if self._stop.is_set():
                 break
             self.reconnect_count += 1
-            self._alert(f"disconnected from the draft room -- reconnecting (attempt {self.reconnect_count})")
+            self._alert(f"{DISCONNECT_ALERT_PREFIX} -- reconnecting (attempt {self.reconnect_count})")
             time.sleep(self.RECONNECT_BACKOFF_S)
 
     def _connect_once(self) -> None:
