@@ -18,6 +18,16 @@ from . import config
 
 STATE_PATH = Path(__file__).resolve().parents[2] / "data" / "draft-state.json"
 
+# Endgame money dump: once the priced pool is gone there is no surplus left
+# to divide the room's cash against, so an unclamped ratio explodes toward
+# infinity on the last few picks -- clamp it well above any real mid-draft
+# read instead.
+FORWARD_RATE_MAX = 3.0
+# Dollars of modeled value a position has to have actually sold before its
+# backward-looking read is trusted at full strength -- see
+# forward_inflation_by_position.
+TILT_EVIDENCE_DOLLARS = 25
+
 # In --ws mode, the background printer thread records sales (record_pick ->
 # save()) alongside the main thread's own record()/undo() calls. Without this,
 # two threads writing the same fixed tmp path can interleave, corrupting the
@@ -101,15 +111,11 @@ class DraftState:
                 modeled += lookup[purchase.player]
         return (paid / modeled) if modeled else 1.0
 
-    def inflation_by_position(self, valuations: list) -> dict[str, float]:
-        """Inflation broken out per position.
-
-        This is the number to actually draft off. A global figure hides the
-        thing you need: in a 2QB league the room reliably bids quarterbacks
-        above sheet and, because the $2,000 is fixed, must therefore be bidding
-        something else below sheet. Whichever position is running under 1.0 is
-        where your remaining dollars buy the most points.
-        """
+    def _position_paid_modeled(self, valuations: list) -> dict[str, tuple[int, int]]:
+        """(paid, modeled) dollar totals per position, for the positions with
+        at least one matched sale -- the shared tally inflation_by_position's
+        ratio and forward_inflation_by_position's evidence weighting both
+        derive from."""
         lookup = {v.name: v for v in valuations}
         paid: dict[str, int] = {}
         modeled: dict[str, int] = {}
@@ -119,10 +125,21 @@ class DraftState:
                 continue
             paid[match.position] = paid.get(match.position, 0) + purchase.price
             modeled[match.position] = modeled.get(match.position, 0) + match.value
+        return {pos: (paid[pos], modeled.get(pos, 0)) for pos in paid}
+
+    def inflation_by_position(self, valuations: list) -> dict[str, float]:
+        """Inflation broken out per position.
+
+        This is the number to actually draft off. A global figure hides the
+        thing you need: in a 2QB league the room reliably bids quarterbacks
+        above sheet and, because the $2,000 is fixed, must therefore be bidding
+        something else below sheet. Whichever position is running under 1.0 is
+        where your remaining dollars buy the most points.
+        """
         return {
-            pos: paid[pos] / modeled[pos]
-            for pos in paid
-            if modeled.get(pos, 0) > 0
+            pos: paid / modeled
+            for pos, (paid, modeled) in self._position_paid_modeled(valuations).items()
+            if modeled > 0
         }
 
     def dollars_remaining_in_room(self) -> int:
@@ -154,16 +171,35 @@ class DraftState:
                       key=lambda v: v.value, reverse=True)[:slots_left]
         return sum(max(0, v.value - config.MIN_BID) for v in pool)
 
-    def forward_inflation(self, valuations: list) -> float:
+    def forward_inflation(self, valuations: list) -> float | None:
         """Ratio of dollars left in the room to the sheet-value surplus of
         what's left to buy with them -- the forward-looking counterpart to
         inflation(). Backward-looking inflation marks remaining players up
         the moment the room overpays early, at exactly the point depleted
         budgets mean they'll actually clear under sheet; this is the number
         that drives the Adjusted column and the live buy/pass call instead.
+
+        Clamped at FORWARD_RATE_MAX rather than left to run unbounded, since
+        a thin remaining surplus (the last few picks of the draft) can send
+        the raw ratio to absurd multiples on money that's mostly the
+        mandatory $1-per-slot floor, not real bidding pressure.
+
+        None means "no read": zero surplus with real money still in the
+        room has no priced pool left to compare that money against, so no
+        ratio is meaningful. Reporting 1.0 there (as a prior version did)
+        reads as "market is calm," which silently masks exactly the
+        every-team-broke endgame dump this is supposed to flag. Zero
+        surplus with zero money left (the draft is over) is the one
+        legitimate 1.0: nothing left to misjudge, so it's a harmless
+        display value rather than a sentinel.
         """
         surplus = self.remaining_pool_surplus(valuations)
-        return (self.biddable_dollars_left() / surplus) if surplus else 1.0
+        biddable = self.biddable_dollars_left()
+        if surplus > 0:
+            return min(FORWARD_RATE_MAX, biddable / surplus)
+        if biddable > 0:
+            return None
+        return 1.0
 
     def forward_inflation_by_position(self, valuations: list,
                                       tilt_bounds: tuple[float, float] = (0.5, 2.0)
@@ -177,21 +213,38 @@ class DraftState:
         that position so far: the ratio of that position's backward rate
         (inflation_by_position) to the overall backward rate (inflation).
         That ratio is the signal for "this position is running hot or cold
-        relative to the market as a whole," and it's clamped so one early
-        outlier sale can't swing the whole board. Only positions with at
-        least one sale get a tilt; everything else falls back to the plain
-        forward rate, same as inflation_by_position's own fallback.
+        relative to the market as a whole."
+
+        The ratio alone is not enough to trust, though: a single early sale
+        is a sample size of one, and a $3 QB going for $9 is a 3x ratio on
+        no evidence at all -- clamping the ratio still lets that one sale
+        double the whole QB board. So the ratio is shrunk toward 1.0 by how
+        much modeled value has actually sold at that position (w, growing
+        from 0 with no sales to 1 as evidence passes TILT_EVIDENCE_DOLLARS)
+        before tilt_bounds clamps the result as an outer bound. Only
+        positions with at least one sale get a tilt; everything else falls
+        back to the plain forward rate, same as inflation_by_position's own
+        fallback.
+
+        Returns {} when there's no forward rate to tilt (forward_inflation
+        is None) or no backward baseline to tilt against.
         """
         base = self.forward_inflation(valuations)
+        if base is None:
+            return {}
         overall_backward = self.inflation(valuations)
-        by_position_backward = self.inflation_by_position(valuations)
         if overall_backward <= 0:
             return {}
+        by_position_backward = self.inflation_by_position(valuations)
+        paid_modeled = self._position_paid_modeled(valuations)
         low, high = tilt_bounds
-        return {
-            pos: base * max(low, min(high, rate / overall_backward))
-            for pos, rate in by_position_backward.items()
-        }
+        result = {}
+        for pos, rate in by_position_backward.items():
+            _, modeled = paid_modeled[pos]
+            w = modeled / (modeled + TILT_EVIDENCE_DOLLARS)
+            tilt = max(low, min(high, 1 + w * (rate / overall_backward - 1)))
+            result[pos] = base * tilt
+        return result
 
     def taken(self) -> set[str]:
         return {p.player for p in self.purchases}

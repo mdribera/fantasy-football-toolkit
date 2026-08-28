@@ -100,11 +100,15 @@ def test_forward_inflation_by_position_tilts_by_the_backward_read():
     rates = state.forward_inflation_by_position(vals)
     assert rates["QB"] > rates["RB"]
     # Every position that sold something is tilted relative to the same
-    # base forward rate.
+    # base forward rate, shrunk toward 1.0 by how much modeled value has
+    # actually sold at that position -- $40 of QB evidence against
+    # TILT_EVIDENCE_DOLLARS ($25) gives w = 40/65.
     base = state.forward_inflation(vals)
     backward = state.inflation_by_position(vals)
     overall_backward = state.inflation(vals)
-    assert round(rates["QB"], 6) == round(base * (backward["QB"] / overall_backward), 6)
+    w = 40 / (40 + draft_state.TILT_EVIDENCE_DOLLARS)
+    expected_qb_tilt = 1 + w * (backward["QB"] / overall_backward - 1)
+    assert round(rates["QB"], 6) == round(base * expected_qb_tilt, 6)
 
 
 def test_targets_reports_the_full_bench_not_just_starters():
@@ -125,3 +129,102 @@ def test_forward_inflation_by_position_omits_positions_with_no_sales():
     state = draft_state.DraftState()
     vals = make_valuations(("Only Player", "RB", 10))
     assert state.forward_inflation_by_position(vals) == {}
+
+
+def test_forward_inflation_is_none_with_zero_surplus_and_cash_left():
+    """T36a: the endgame money-dump case. Every roster spot is already
+    filled (zero surplus to compare the room's leftover cash against), but
+    the room still has real money -- reading that as 1.0 would say "market
+    is calm" when there's nothing left to be calm about. It should read as
+    no signal at all, and the per-position tilt has nothing to tilt."""
+    state = draft_state.DraftState(my_team="ME")
+    vals = make_valuations(("Player", "RB", 10))
+    state.spots_left = lambda team: 0                         # type: ignore[method-assign]
+    state.all_teams = lambda: ["ME"]                          # type: ignore[method-assign]
+    state.budget_left = lambda team: 50                       # type: ignore[method-assign]
+
+    assert state.forward_inflation(vals) is None
+    assert state.forward_inflation_by_position(vals) == {}
+
+
+def test_forward_inflation_clamps_at_forward_rate_max_on_a_tiny_surplus():
+    """T36a: the last few picks of the draft can leave a razor-thin sheet
+    surplus against dollars that are mostly the mandatory $1-per-slot
+    floor, not real bidding pressure -- an unclamped ratio would report an
+    absurd 30x read instead of the intended 3.0x ceiling."""
+    state = draft_state.DraftState(my_team="ME")
+    vals = make_valuations(("OnlyPlayer", "RB", 6))   # surplus = 6 - MIN_BID = 5
+    state.spots_left = lambda team: 1                         # type: ignore[method-assign]
+    state.all_teams = lambda: ["ME"]                          # type: ignore[method-assign]
+    state.budget_left = lambda team: 151                      # biddable = 151 - 1 = 150
+
+    assert state.remaining_pool_surplus(vals) == 5
+    assert state.biddable_dollars_left() == 150
+    assert state.forward_inflation(vals) == draft_state.FORWARD_RATE_MAX
+
+
+def test_forward_inflation_is_one_when_the_draft_is_over():
+    """Zero surplus and zero cash both hitting zero at once is the one
+    legitimate case for the 1.0 sentinel: the draft is over, so there is
+    nothing left to misjudge and no reason to show "no read"."""
+    state = draft_state.DraftState(my_team="ME")
+    vals = make_valuations(("Player", "RB", 10))
+    state.spots_left = lambda team: 0                         # type: ignore[method-assign]
+    state.all_teams = lambda: ["ME"]                          # type: ignore[method-assign]
+    state.budget_left = lambda team: 0                        # type: ignore[method-assign]
+
+    assert state.forward_inflation(vals) == 1.0
+
+
+def test_forward_inflation_by_position_shrinks_a_single_cheap_qb_sale():
+    """T36b audit repro: a $3 QB sold for $9 is a 3x paid/modeled ratio on
+    a sample size of one -- the pre-T36b clamp would still let that single
+    sale double the whole QB board (tilt 2.0). Weighting the tilt by
+    modeled-dollar evidence keeps a thin sample from swinging the read that
+    hard, while a handful of at-sheet non-QB sales gives the room a mostly
+    calm backward baseline to tilt against."""
+    state = draft_state.DraftState(my_team="ME")
+    vals = make_valuations(
+        ("Cheap QB", "QB", 3),
+        *[(f"Filler{i}", "RB", 50) for i in range(5)],
+        ("Josh Allen", "QB", 80),
+        *[(f"Depth{i}", "RB", 20) for i in range(10)],
+    )
+    state.purchases.append(draft_state.Purchase("Cheap QB", "QB", 9, "RIVAL"))
+    for i in range(5):
+        state.purchases.append(draft_state.Purchase(f"Filler{i}", "RB", 50, "RIVAL"))
+    state.spots_left = lambda team: 8                         # type: ignore[method-assign]
+    state.all_teams = lambda: ["ME", "RIVAL"]                 # type: ignore[method-assign]
+    state.budget_left = lambda team: 150                      # type: ignore[method-assign]
+
+    base = state.forward_inflation(vals)
+    rate = state.forward_inflation_by_position(vals)["QB"]
+    assert rate > base            # still tilted up, the sale really was over sheet
+    assert rate < base * 1.4      # but nowhere near the old clamped-at-2.0 double
+
+
+def test_forward_inflation_by_position_tilt_approaches_raw_ratio_with_more_evidence():
+    """T36b: as modeled-dollar evidence at a position grows past
+    TILT_EVIDENCE_DOLLARS, the shrinkage weight w approaches 1 and the tilt
+    should converge on the raw (unshrunk) backward-vs-backward ratio,
+    rather than staying pinned near 1.0 the way a single cheap sale does."""
+    state = draft_state.DraftState(my_team="ME")
+    vals = make_valuations(
+        *[(f"QB{i}", "QB", 50) for i in range(10)],
+        *[(f"RB{i}", "RB", 50) for i in range(10)],
+        *[(f"Depth{i}", "WR", 20) for i in range(20)],
+    )
+    for i in range(10):
+        state.purchases.append(draft_state.Purchase(f"QB{i}", "QB", 65, "RIVAL"))  # 1.3x sheet
+        state.purchases.append(draft_state.Purchase(f"RB{i}", "RB", 50, "RIVAL"))  # at sheet
+    state.spots_left = lambda team: 10                        # type: ignore[method-assign]
+    state.all_teams = lambda: ["ME", "RIVAL"]                 # type: ignore[method-assign]
+    state.budget_left = lambda team: 400                      # type: ignore[method-assign]
+
+    base = state.forward_inflation(vals)
+    overall_backward = state.inflation(vals)
+    backward = state.inflation_by_position(vals)
+    raw_ratio = backward["QB"] / overall_backward
+
+    tilt = state.forward_inflation_by_position(vals)["QB"] / base
+    assert abs(tilt - raw_ratio) < 0.02

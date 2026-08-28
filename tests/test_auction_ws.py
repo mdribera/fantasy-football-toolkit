@@ -347,6 +347,46 @@ def test_nomination_board_sort_name_ascending():
     assert names == sorted(names)
 
 
+def test_nomination_board_none_inflation_gives_none_adjusted_and_edge():
+    """T36a: a plain None (the whole-board "no read" case) must leave every
+    row's adjusted/edge as None rather than crashing on `value * None`."""
+    state = _board_state()
+    rows = auction.nomination_board(BIG_BOARD, state, inflation=None)
+    assert all(r.adjusted is None for r in rows)
+    assert all(r.edge is None for r in rows)
+
+
+def test_nomination_board_dict_rate_falls_back_to_none_overall():
+    """T36a: a per-position dict with a real QB rate but no read for the
+    other positions (dict fallback recomputes the overall rate, which can
+    itself be None) -- QB rows still price, everything else reads None
+    rather than silently reusing a stale or wrong number."""
+    state = _board_state()
+    state.spots_left = lambda team: 0                        # type: ignore[method-assign]
+    state.all_teams = lambda: ["ME"]                          # type: ignore[method-assign]
+    state.budget_left = lambda team: 50                       # type: ignore[method-assign]
+
+    rows = auction.nomination_board(BIG_BOARD, state, inflation={"QB": 1.2})
+    allen = next(r for r in rows if r.name == "Josh Allen")
+    assert allen.adjusted == 48
+    assert allen.edge == 40 - 48
+
+    bijan = next(r for r in rows if r.name == "Bijan Robinson")
+    assert bijan.adjusted is None
+    assert bijan.edge is None
+
+
+def test_nomination_board_sort_adj_and_rec_tolerate_none_rates():
+    """Sort keys fall back to `or 0` for None adjusted/edge -- a whole-board
+    no-read state must still sort (all rows tie, which is fine) instead of
+    raising on `None < int`."""
+    state = _board_state()
+    rows = auction.nomination_board(BIG_BOARD, state, inflation=None, sort="adj")
+    assert len(rows) == len(BIG_BOARD)
+    rows = auction.nomination_board(BIG_BOARD, state, inflation=None, sort="rec")
+    assert len(rows) == len(BIG_BOARD)
+
+
 def test_save_nomination_list_round_trips(tmp_path):
     path = tmp_path / "nomination-list.txt"
     auction.save_nomination_list(path, ["Josh Allen", "Bijan Robinson"])
@@ -362,7 +402,7 @@ def test_save_nomination_list_empty_list_writes_empty_file(tmp_path):
 
 def test_bid_verdict_without_a_sheet_value_is_neutral():
     verdict = auction.bid_verdict(40, None)
-    assert verdict.label == "unpriced"
+    assert verdict.label == "no read"
     assert verdict.style == "dim"
 
 

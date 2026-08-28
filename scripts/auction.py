@@ -307,7 +307,7 @@ class Verdict:
 def bid_verdict(current_high: int, adjusted_value: int | None) -> Verdict:
     """How the current high bid reads against the inflation-adjusted sheet."""
     if not adjusted_value:
-        return Verdict("unpriced", "dim")
+        return Verdict("no read", "dim")
     ratio = current_high / adjusted_value
     if ratio < VERDICT_BARGAIN_RATIO:
         return Verdict("good value", "green")
@@ -490,8 +490,8 @@ class BoardRow:
     against sheet, and whether it's starred onto the prepared queue."""
 
     valuation: values.Valuation
-    adjusted: int
-    edge: int          # sheet value minus adjusted value; positive = bargain
+    adjusted: int | None    # None: no market read at this player's position
+    edge: int | None        # sheet value minus adjusted value; positive = bargain
     starred: bool
 
     @property
@@ -505,7 +505,7 @@ NOMINATION_BOARD_SORTS = ("rank", "rec", "pos", "tier", "sheet", "adj", "espn", 
 def nomination_board(
     vals: list[values.Valuation],
     state: draft_state.DraftState,
-    inflation: float | dict[str, float],
+    inflation: float | None | dict[str, float],
     *,
     starred: set[str] = frozenset(),
     query: str | None = None,
@@ -520,7 +520,9 @@ def nomination_board(
     once, since recomputing it per row is fine at a few dozen rows but not at
     the full ~600-player board. A plain float applies to every position; a
     dict falls back to the overall forward rate for a position with no entry
-    (not enough sales at that position yet to tilt it).
+    (not enough sales at that position yet to tilt it). Either can be None
+    -- no read available -- in which case the affected rows' adjusted/edge
+    are None too.
     """
     taken = {name.lower() for name in state.taken()}
     starred_lower = {name.lower() for name in starred}
@@ -538,21 +540,21 @@ def nomination_board(
         if starred_only and not is_starred:
             continue
         rate = inflation.get(v.position, overall) if isinstance(inflation, dict) else inflation
-        adjusted = max(1, round(v.value * rate))
+        adjusted = max(1, round(v.value * rate)) if rate is not None else None
         rows.append(BoardRow(
             valuation=v,
             adjusted=adjusted,
-            edge=v.value - adjusted,
+            edge=(v.value - adjusted) if adjusted is not None else None,
             starred=is_starred,
         ))
 
     key_funcs = {
         "rank": lambda r: r.valuation.value,
-        "rec": lambda r: r.edge,
+        "rec": lambda r: r.edge or 0,
         "pos": lambda r: r.valuation.position,
         "tier": lambda r: -r.valuation.tier,
         "sheet": lambda r: r.valuation.value,
-        "adj": lambda r: r.adjusted,
+        "adj": lambda r: r.adjusted or 0,
         "espn": lambda r: r.valuation.espn_avg or 0,
         "bye": lambda r: r.valuation.bye or 0,
         "name": lambda r: r.valuation.name.lower(),
@@ -648,8 +650,9 @@ def best_table(state: draft_state.DraftState, vals: list[values.Valuation],
 
     overall = state.forward_inflation(vals)
     by_position = state.forward_inflation_by_position(vals)
+    market_read = f"market x{overall:.2f} forward" if overall is not None else "market no read"
     table = Table(title=f"Best available{' -- ' + position.upper() if position else ''} "
-                        f"(market x{overall:.2f} forward)")
+                        f"({market_read})")
     table.add_column("Player")
     table.add_column("Pos", justify="center")
     table.add_column("Tier", justify="center")
@@ -659,9 +662,10 @@ def best_table(state: draft_state.DraftState, vals: list[values.Valuation],
 
     for v in pool:
         rate = by_position.get(v.position, overall)
-        adjusted = max(1, round(v.value * rate))
+        adjusted = max(1, round(v.value * rate)) if rate is not None else None
         table.add_row(v.name, v.position, str(v.tier),
-                      f"{v.projected_points:.0f}", f"${v.value}", f"${adjusted}")
+                      f"{v.projected_points:.0f}", f"${v.value}",
+                      f"${adjusted}" if adjusted is not None else "-")
     return table
 
 
@@ -694,12 +698,17 @@ def market_table(state: draft_state.DraftState,
     forward-looking (see DraftState.forward_inflation_by_position) -- the
     "buy here" / "let these go" call is inherently about what's still ahead,
     not a record of what already sold."""
-    table = Table(title=f"Market vs sheet -- overall x{state.forward_inflation(vals):.2f} forward")
+    overall = state.forward_inflation(vals)
+    overall_read = f"x{overall:.2f} forward" if overall is not None else "no read"
+    table = Table(title=f"Market vs sheet -- overall {overall_read}")
     table.add_column("Pos")
     table.add_column("Forward", justify="right")
     table.add_column("Read")
-    for pos, rate in sorted(state.forward_inflation_by_position(vals).items(),
-                            key=lambda kv: kv[1], reverse=True):
+    by_position = state.forward_inflation_by_position(vals)
+    if not by_position:
+        table.add_row("-", "-", "[dim]no per-position read yet[/dim]")
+        return table
+    for pos, rate in sorted(by_position.items(), key=lambda kv: kv[1], reverse=True):
         if rate > 1.1:
             read = "[red]over sheet -- let these go[/red]"
         elif rate < 0.9:

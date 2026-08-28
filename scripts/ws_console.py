@@ -97,9 +97,9 @@ class StatusPanel(Static):
     high_bidder = reactive("")
     clock_s = reactive(0)
     sheet_value = reactive(0)
-    adjusted_value = reactive(0)
+    adjusted_value = reactive(None)
     espn_avg = reactive(None)
-    edge = reactive(0)
+    edge = reactive(None)
     tier = reactive(0)
     bye = reactive(None)
     max_bid_amount = reactive(0)
@@ -118,13 +118,16 @@ class StatusPanel(Static):
         if self.bye:
             header += f"  bye {self.bye}"
         espn_avg = f"${self.espn_avg:.0f}" if self.espn_avg is not None else "-"
-        edge_style = "green" if self.edge > 0 else "red" if self.edge < 0 else "dim"
+        adjusted = f"${self.adjusted_value}" if self.adjusted_value is not None else "-"
+        edge_style = ("green" if self.edge and self.edge > 0
+                     else "red" if self.edge and self.edge < 0 else "dim")
+        edge = f"{self.edge:+d}" if self.edge is not None else "-"
         lines = [
             header,
             f"High: [bold]${self.high_bid}[/bold] ({self.high_bidder or '-'})   "
             f"Clock: [{clock_style}]{clock}[/{clock_style}]",
-            f"Sheet ${self.sheet_value} · Adjusted ${self.adjusted_value} · "
-            f"ESPN {espn_avg} · Edge [{edge_style}]{self.edge:+d}[/{edge_style}] · "
+            f"Sheet ${self.sheet_value} · Adjusted {adjusted} · "
+            f"ESPN {espn_avg} · Edge [{edge_style}]{edge}[/{edge_style}] · "
             f"max bid ${self.max_bid_amount}",
         ]
         lines += [line for line in (self.verdict_line, self.tier_line, self.bye_line) if line]
@@ -538,7 +541,10 @@ class TextualWsApp(App):
         self.status.sheet_value = match.value if match else 0
         self.status.adjusted_value = self._adjusted(match)
         self.status.espn_avg = match.espn_avg if match else None
-        self.status.edge = (match.value - self.status.adjusted_value) if match else 0
+        self.status.edge = (
+            match.value - self.status.adjusted_value
+            if match and self.status.adjusted_value is not None else None
+        )
         self.status.tier = match.tier if match else 0
         self.status.bye = match.bye if match else None
         self.status.max_bid_amount = self.state.max_bid(self.state.my_team)
@@ -554,16 +560,21 @@ class TextualWsApp(App):
         bid watchdog."""
         return self._last_bid_team_id == config.MY_TEAM_ID
 
-    def _adjusted(self, match: values.Valuation | None) -> int:
+    def _adjusted(self, match: values.Valuation | None) -> int | None:
         """Market-adjusted price: the forward-looking rate (dollars left in
         the room over sheet value of what's left to buy with them), tilted
         by this position's own market read -- not the backward-looking rate,
         which marks remaining players up at exactly the moment depleted
-        budgets mean they'll actually clear under sheet."""
+        budgets mean they'll actually clear under sheet.
+
+        None when there's no player to price, or no market read for it at
+        all (the endgame no-read case -- see DraftState.forward_inflation)."""
         if not match:
-            return 0
+            return None
         by_position = self.state.forward_inflation_by_position(self.vals)
         rate = by_position.get(match.position, self.state.forward_inflation(self.vals))
+        if rate is None:
+            return None
         return max(1, round(match.value * rate))
 
     def _flash(self, message: str) -> None:
@@ -803,7 +814,10 @@ class TextualWsApp(App):
 
     def _board_cells(self, row: "auction.BoardRow", needs: dict, targets: dict) -> tuple:
         v = row.valuation
-        edge_style = "green" if row.edge > 0 else "red" if row.edge < 0 else "dim"
+        edge_style = ("green" if row.edge and row.edge > 0
+                     else "red" if row.edge and row.edge < 0 else "dim")
+        edge_cell = (Text.from_markup(f"[{edge_style}]{row.edge:+d}[/{edge_style}]")
+                    if row.edge is not None else Text("-", style="dim"))
         return (
             "*" if row.starred else "",
             v.name,
@@ -812,9 +826,9 @@ class TextualWsApp(App):
             f"T{v.tier}",
             str(v.bye) if v.bye else "-",
             f"${v.value}",
-            f"${row.adjusted}",
+            f"${row.adjusted}" if row.adjusted is not None else "-",
             f"${v.espn_avg:.0f}" if v.espn_avg is not None else "-",
-            Text.from_markup(f"[{edge_style}]{row.edge:+d}[/{edge_style}]"),
+            edge_cell,
         )
 
     def action_nominate(self) -> None:

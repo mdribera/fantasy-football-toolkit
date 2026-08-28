@@ -119,6 +119,15 @@ def _stub_closed_league(state, vals) -> None:
     state.budget_left = lambda team: surplus + len(vals)        # type: ignore[method-assign]
 
 
+def _stub_no_read(state) -> None:
+    """T36a: force forward_inflation into its no-read state -- zero sheet
+    surplus left to buy (every slot already spoken for) but real cash still
+    in the room -- regardless of what valuations it's handed."""
+    state.all_teams = lambda: ["ME"]                            # type: ignore[method-assign]
+    state.spots_left = lambda team: 0                           # type: ignore[method-assign]
+    state.budget_left = lambda team: 50                         # type: ignore[method-assign]
+
+
 def _roster_rows(app) -> list[tuple]:
     """Every row currently in the roster DataTable, as plain tuples."""
     return [tuple(app.roster_table.get_row_at(i))
@@ -442,6 +451,26 @@ async def test_status_verdict_reflects_the_current_high(tmp_path):
         await app._poll()
         await pilot.pause()
         assert "overpaying" in app.status.verdict_line
+
+
+@pytest.mark.asyncio
+async def test_status_shows_no_read_when_forward_inflation_is_none(tmp_path):
+    """T36a: the endgame money-dump case -- zero sheet-value surplus left
+    but real cash still in the room. Adjusted/Edge must render as '-'
+    rather than crash on `value * None`, and the verdict line reads
+    "no read" instead of misjudging the bid as an overpay."""
+    app, ws, state = make_app(tmp_path)
+    _stub_no_read(state)
+    async with app.run_test() as pilot:
+        ws.feed(draft_ws.Bid(4, 3915511, 54, 25000, 12731))
+        await app._poll()
+        await pilot.pause()
+        assert app.status.adjusted_value is None
+        assert app.status.edge is None
+        rendered = str(app.status.render())
+        assert "Adjusted -" in rendered
+        assert "Edge -" in rendered
+        assert "no read" in app.status.verdict_line
 
 
 @pytest.mark.asyncio
@@ -1383,6 +1412,23 @@ async def test_board_rows_carry_tier_and_adjusted_value(tmp_path):
     assert row.valuation.value == 52
     assert row.adjusted == 52            # no sales yet, inflation is 1.0
     assert row.starred is True
+
+
+@pytest.mark.asyncio
+async def test_board_rows_show_dash_when_forward_inflation_is_none(tmp_path):
+    """T36a: no per-position read at all (forward_inflation is None) must
+    fall through to the '-' cell rendering, not crash on `value * None`."""
+    app, ws, state = make_app(tmp_path)
+    _stub_no_read(state)
+    async with app.run_test() as pilot:
+        app._reload_board()
+        await pilot.pause()
+        row = app._board_rows[0]
+        cells = app._board_cells(row, {}, {})
+    assert row.adjusted is None
+    assert row.edge is None
+    assert cells[7] == "-"               # Adj column
+    assert str(cells[9]) == "-"          # Edge column
 
 
 @pytest.mark.asyncio
