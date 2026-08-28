@@ -39,6 +39,11 @@ class Valuation:
     value: int
     tier: int = 0
     espn_id: int | None = None
+    bye: int | None = None
+    espn_avg: float | None = None     # ESPN's own average auction value -- a
+                                       # market anchor read, not a price; built
+                                       # for a 1QB format and will read high on
+                                       # QBs and low on RB/WR relative to value
 
     @property
     def value_str(self) -> str:
@@ -89,6 +94,18 @@ def _espn_id(player) -> int | None:
     return getattr(player, "espn_id", None)
 
 
+def _bye(player) -> int | None:
+    if isinstance(player, dict):
+        return player.get("bye_week") or player.get("bye")
+    return getattr(player, "bye_week", None) or getattr(player, "bye", None)
+
+
+def _espn_avg(player) -> float | None:
+    if isinstance(player, dict):
+        return player.get("espn_avg")
+    return getattr(player, "espn_avg", None)
+
+
 def replacement_points(players: Sequence, position: str) -> float:
     """Projected points of the player at this position's replacement rank."""
     pool = _positional_pool(players, position)
@@ -126,6 +143,8 @@ def compute_values(
                 vorp=vorp,
                 value=config.MIN_BID,
                 espn_id=_espn_id(player),
+                bye=_bye(player),
+                espn_avg=_espn_avg(player),
             )
         )
 

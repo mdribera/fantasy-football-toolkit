@@ -89,7 +89,8 @@ class FakeWsController:
         return auction.clock_milestone(event.remaining_ms, self._announced)
 
 
-def make_app(tmp_path, nomination_list=("Justin Jefferson", "Kenneth Walker III")):
+def make_app(tmp_path, nomination_list=("Justin Jefferson", "Kenneth Walker III"),
+             nomination_list_path=None):
     """Returns (app, ws, state). state_path is always under tmp_path: the
     DraftState default writes over the real live-draft file."""
     values_path = tmp_path / "values.json"
@@ -98,7 +99,8 @@ def make_app(tmp_path, nomination_list=("Justin Jefferson", "Kenneth Walker III"
     state = draft_state.DraftState(my_team="ME", state_path=tmp_path / "draft-state.json")
     resolver = draft_sync.PlayerResolver(values_path)
     ws = FakeWsController()
-    app = ws_console.TextualWsApp(ws, state, resolver, vals, list(nomination_list))
+    app = ws_console.TextualWsApp(ws, state, resolver, vals, list(nomination_list),
+                                   nomination_list_path)
     return app, ws, state
 
 
@@ -122,7 +124,7 @@ async def test_app_mounts_every_panel(tmp_path):
         assert app.query_one("#bidlog", ws_console.BidLog)
         assert app.query_one("#roster", ws_console.RosterPanel)
         assert app.query_one("#analysis", ws_console.AnalysisPanel)
-        assert app.query_one("#nominations", ws_console.NominationList) is not None
+        assert app.query_one("#nominations", ws_console.NominationTable) is not None
 
 
 @pytest.mark.asyncio
@@ -400,14 +402,16 @@ async def test_analysis_falls_back_to_overall_inflation(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_nomination_list_shows_available_players_only(tmp_path):
+async def test_board_hides_sold_players(tmp_path):
+    """The board is the full priced pool, not just the starred set -- once
+    Jefferson sells, every other undrafted fixture player stays visible."""
     app, ws, state = make_app(tmp_path)
     state.record("Justin Jefferson", "WR", 52, "HH")
     async with app.run_test() as pilot:
-        await app._reload_nominations()
+        app._reload_board()
         await pilot.pause()
-        names = [row.player_name for row in app.nominations.children]
-        assert names == ["Kenneth Walker III"]
+        names = {row.name for row in app._board_rows}
+        assert names == {"Bijan Robinson", "Kenneth Walker III", "Tony Pollard"}
 
 
 @pytest.mark.asyncio
@@ -661,6 +665,124 @@ async def test_command_quit_exits(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_slash_command_filters_the_board_by_name(tmp_path):
+    app, _, _ = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        app._run_command("/jeff")
+        await pilot.pause()
+        assert [r.name for r in app._board_rows] == ["Justin Jefferson"]
+        app._run_command("/")  # empty search clears the filter
+        await pilot.pause()
+        assert len(app._board_rows) == 4
+
+
+@pytest.mark.asyncio
+async def test_search_command_is_equivalent_to_the_slash_prefix(tmp_path):
+    app, _, _ = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        app._run_command("search pollard")
+        await pilot.pause()
+        assert [r.name for r in app._board_rows] == ["Tony Pollard"]
+
+
+@pytest.mark.asyncio
+async def test_pos_command_filters_by_position(tmp_path):
+    app, _, _ = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        app._run_command("pos WR")
+        await pilot.pause()
+        assert [r.name for r in app._board_rows] == ["Justin Jefferson"]
+        app._run_command("pos all")
+        await pilot.pause()
+        assert len(app._board_rows) == 4
+
+
+@pytest.mark.asyncio
+async def test_sort_command_reorders_by_the_given_key(tmp_path):
+    # No starred players here: starring pins rows to the top regardless of
+    # sort, which would otherwise mask the sort order this test checks.
+    app, _, _ = make_app(tmp_path, nomination_list=())
+    async with app.run_test() as pilot:
+        app._run_command("sort name")
+        await pilot.pause()
+        names = [r.name for r in app._board_rows]
+        assert names == sorted(names)
+
+
+@pytest.mark.asyncio
+async def test_sort_command_rejects_an_unknown_key(tmp_path):
+    app, _, _ = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        app._run_command("sort nonsense")
+        await pilot.pause()
+        assert any("Unknown sort key" in str(line) for line in app.bidlog.lines)
+
+
+@pytest.mark.asyncio
+async def test_star_command_filters_to_the_starred_set(tmp_path):
+    app, _, _ = make_app(
+        tmp_path, nomination_list=("Justin Jefferson", "Kenneth Walker III"))
+    async with app.run_test() as pilot:
+        app._run_command("star")
+        await pilot.pause()
+        assert {r.name for r in app._board_rows} == {"Justin Jefferson", "Kenneth Walker III"}
+        app._run_command("star all")
+        await pilot.pause()
+        assert len(app._board_rows) == 4
+
+
+@pytest.mark.asyncio
+async def test_clear_command_resets_every_filter(tmp_path):
+    app, _, _ = make_app(
+        tmp_path, nomination_list=("Justin Jefferson",))
+    async with app.run_test() as pilot:
+        app._run_command("/robinson")
+        app._run_command("pos RB")
+        app._run_command("star")
+        await pilot.pause()
+        assert app._board_rows == []   # Robinson is a RB but not starred
+        app._run_command("clear")
+        await pilot.pause()
+        assert len(app._board_rows) == 4
+
+
+@pytest.mark.asyncio
+async def test_space_stars_the_highlighted_row_and_saves_it(tmp_path):
+    list_path = tmp_path / "nomination-list.txt"
+    app, _, _ = make_app(tmp_path, nomination_list=(), nomination_list_path=list_path)
+    async with app.run_test() as pilot:
+        app.nominations.move_cursor(row=0)  # Justin Jefferson, top by rank
+        await pilot.press("space")
+        await pilot.pause()
+    assert "Justin Jefferson" in app.starred
+    assert auction.load_nomination_list(list_path) == ["Justin Jefferson"]
+
+
+@pytest.mark.asyncio
+async def test_space_again_unstars_and_persists_the_removal(tmp_path):
+    list_path = tmp_path / "nomination-list.txt"
+    app, _, _ = make_app(
+        tmp_path, nomination_list=("Justin Jefferson",), nomination_list_path=list_path)
+    async with app.run_test() as pilot:
+        app.nominations.move_cursor(row=0)  # starred rows lead, so this is Jefferson
+        await pilot.press("space")
+        await pilot.pause()
+    assert "Justin Jefferson" not in app.starred
+    assert auction.load_nomination_list(list_path) == []
+
+
+@pytest.mark.asyncio
+async def test_slash_hotkey_opens_the_command_input_prefilled(tmp_path):
+    app, _, _ = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.press("slash")
+        await pilot.pause()
+        assert app.command.display
+        assert app.command.has_focus
+        assert app.command.value == "/"
+
+
+@pytest.mark.asyncio
 async def test_a_nomination_turn_does_not_steal_focus_from_an_open_command(tmp_path):
     app, ws, _ = make_app(tmp_path)
     async with app.run_test() as pilot:
@@ -691,14 +813,14 @@ async def test_reload_after_a_sale_preserves_the_highlighted_player(tmp_path):
     app, ws, state = make_app(
         tmp_path, nomination_list=("Justin Jefferson", "Kenneth Walker III", "Tony Pollard"))
     async with app.run_test() as pilot:
-        app.nominations.index = 2  # highlight Tony Pollard
-        assert app.nominations.highlighted_child.player_name == "Tony Pollard"
-        # A Sold event for an unrelated player triggers _reload_nominations,
-        # which must not reset the highlight back to row 0.
-        ws.feed(draft_ws.Sold(4, 3915511, 1, 54, 0))    # Bijan Robinson, not on the list
+        app.nominations.move_cursor(row=2)  # highlight Tony Pollard
+        assert app._board_rows[app.nominations.cursor_row].name == "Tony Pollard"
+        # A Sold event for an unrelated player triggers _reload_board, which
+        # must not reset the highlight back to row 0.
+        ws.feed(draft_ws.Sold(4, 3915511, 1, 54, 0))    # Bijan Robinson, not starred
         await app._poll()
         await pilot.pause()
-        assert app.nominations.highlighted_child.player_name == "Tony Pollard"
+        assert app._board_rows[app.nominations.cursor_row].name == "Tony Pollard"
 
 
 @pytest.mark.asyncio
@@ -706,13 +828,13 @@ async def test_reload_falls_back_to_row_zero_when_the_highlighted_player_is_take
     app, ws, state = make_app(
         tmp_path, nomination_list=("Justin Jefferson", "Kenneth Walker III"))
     async with app.run_test() as pilot:
-        app.nominations.index = 1  # highlight Kenneth Walker III
-        assert app.nominations.highlighted_child.player_name == "Kenneth Walker III"
+        app.nominations.move_cursor(row=1)  # highlight Kenneth Walker III
+        assert app._board_rows[app.nominations.cursor_row].name == "Kenneth Walker III"
         state.record("Kenneth Walker III", "RB", 38, "HH")
-        await app._reload_nominations()
+        app._reload_board()
         await pilot.pause()
-        assert app.nominations.highlighted_child.player_name == "Justin Jefferson"
-        assert app.nominations.index == 0
+        assert app._board_rows[app.nominations.cursor_row].name == "Justin Jefferson"
+        assert app.nominations.cursor_row == 0
 
 
 @pytest.mark.asyncio
@@ -902,27 +1024,30 @@ async def test_bid_watchdog_clears_when_the_bid_is_confirmed(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_nomination_rows_carry_tier_and_adjusted_value(tmp_path):
-    app, ws, _ = make_app(tmp_path)   # default list: Justin Jefferson, Kenneth Walker III
+async def test_board_rows_carry_tier_and_adjusted_value(tmp_path):
+    app, ws, _ = make_app(tmp_path)   # default starred: Justin Jefferson, Kenneth Walker III
     async with app.run_test() as pilot:
-        await app._reload_nominations()
+        app._reload_board()
         await pilot.pause()
-        row = app.nominations.children[0]         # Justin Jefferson: tier 1, $52
-    assert row.player_name == "Justin Jefferson"
-    assert row.tier == "T1"
-    assert row.sheet_value == "$52"
-    assert row.adjusted_value == "~$52"            # no sales yet, inflation is 1.0
+        row = app._board_rows[0]         # Justin Jefferson: tier 1, $52, starred
+    assert row.name == "Justin Jefferson"
+    assert row.valuation.tier == 1
+    assert row.valuation.value == 52
+    assert row.adjusted == 52            # no sales yet, inflation is 1.0
+    assert row.starred is True
 
 
 @pytest.mark.asyncio
-async def test_nomination_row_falls_back_when_unpriced(tmp_path):
+async def test_a_starred_name_missing_from_values_json_is_not_a_row(tmp_path):
+    """A starred name that isn't in values.json (cut, renamed, a typo) has no
+    Valuation to build a row from, so it's silently absent from the board --
+    but see test_save_nomination_list_round_trips: it must not be dropped
+    from the starred set on the next save."""
     app, ws, _ = make_app(
         tmp_path, nomination_list=("Justin Jefferson", "Not On The Board"))
     async with app.run_test() as pilot:
-        await app._reload_nominations()
+        app._reload_board()
         await pilot.pause()
-        row = app.nominations.children[1]
-    assert row.player_name == "Not On The Board"
-    assert row.tier == "-"
-    assert row.sheet_value == "-"
-    assert row.adjusted_value == "-"
+        names = [row.name for row in app._board_rows]
+    assert "Not On The Board" not in names
+    assert "Justin Jefferson" in names

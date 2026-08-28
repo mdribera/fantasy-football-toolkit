@@ -441,6 +441,94 @@ def load_nomination_list(path: Path) -> list[str]:
     return [line.strip() for line in path.read_text().splitlines() if line.strip()]
 
 
+def save_nomination_list(path: Path, names: list[str]) -> None:
+    """Write the starred set back to disk, tmp-then-replace so a crash mid
+    write never corrupts the file. Matches draft_state.save's convention."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text("\n".join(names) + ("\n" if names else ""))
+    tmp.replace(path)
+
+
+@dataclass
+class BoardRow:
+    """One row of the nomination board: a priced player plus the numbers and
+    state that only make sense live -- the market-adjusted price, the edge
+    against sheet, and whether it's starred onto the prepared queue."""
+
+    valuation: values.Valuation
+    adjusted: int
+    edge: int          # sheet value minus adjusted value; positive = bargain
+    starred: bool
+
+    @property
+    def name(self) -> str:
+        return self.valuation.name
+
+
+NOMINATION_BOARD_SORTS = ("rank", "rec", "pos", "tier", "sheet", "adj", "espn", "bye", "name")
+
+
+def nomination_board(
+    vals: list[values.Valuation],
+    state: draft_state.DraftState,
+    inflation: float,
+    *,
+    starred: set[str] = frozenset(),
+    query: str | None = None,
+    position: str | None = None,
+    starred_only: bool = False,
+    sort: str = "rank",
+) -> list[BoardRow]:
+    """The full available board: every undrafted priced player, ready to
+    search, filter and sort. `inflation` is taken as a parameter rather than
+    recomputed here -- callers hold a single draft-wide DraftState.inflation()
+    result and pass it in once, since recomputing it per row is fine at a
+    few dozen rows but not at the full ~600-player board.
+    """
+    taken = {name.lower() for name in state.taken()}
+    starred_lower = {name.lower() for name in starred}
+
+    rows = []
+    for v in vals:
+        if v.name.lower() in taken:
+            continue
+        if query and query.lower() not in v.name.lower():
+            continue
+        if position and v.position != position.upper():
+            continue
+        is_starred = v.name.lower() in starred_lower
+        if starred_only and not is_starred:
+            continue
+        adjusted = max(1, round(v.value * inflation))
+        rows.append(BoardRow(
+            valuation=v,
+            adjusted=adjusted,
+            edge=v.value - adjusted,
+            starred=is_starred,
+        ))
+
+    key_funcs = {
+        "rank": lambda r: r.valuation.value,
+        "rec": lambda r: r.edge,
+        "pos": lambda r: r.valuation.position,
+        "tier": lambda r: -r.valuation.tier,
+        "sheet": lambda r: r.valuation.value,
+        "adj": lambda r: r.adjusted,
+        "espn": lambda r: r.valuation.espn_avg or 0,
+        "bye": lambda r: r.valuation.bye or 0,
+        "name": lambda r: r.valuation.name.lower(),
+    }
+    key = key_funcs.get(sort, key_funcs["rank"])
+    reverse = sort not in ("pos", "name")
+    rows.sort(key=key, reverse=reverse)
+    # Starred rows lead the board regardless of the active sort, so the
+    # prepared queue always sits on top -- stable sort keeps each group's
+    # internal order intact.
+    rows.sort(key=lambda r: not r.starred)
+    return rows
+
+
 def load_state(fresh: bool, path: Path = draft_state.STATE_PATH) -> draft_state.DraftState:
     """Fresh state for a new practice-draft rehearsal, or the persisted one.
 
@@ -677,7 +765,7 @@ def main() -> int:
         # and the other modes have no reason to pull in textual.
         from ws_console import run_ws_console
 
-        run_ws_console(ws, state, resolver, vals, nomination_list)
+        run_ws_console(ws, state, resolver, vals, nomination_list, NOMINATION_LIST_PATH)
         ws.client.stop()
         state.save()
         console.print("Saved.")

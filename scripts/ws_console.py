@@ -21,7 +21,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal
 from textual.reactive import reactive
 from textual.screen import ModalScreen
-from textual.widgets import Footer, Input, Label, ListItem, ListView, RichLog, Static
+from textual.widgets import DataTable, Footer, Input, RichLog, Static
 
 import auction
 from ff import config, draft_state, draft_sync, draft_ws, values
@@ -107,23 +107,16 @@ class AnalysisPanel(Static):
         return Text.from_markup(body or "[dim]Nothing nominated.[/dim]")
 
 
-class NominationRow(ListItem):
-    """One prepared nomination. Carries the player's name, tier, and both
-    values so `n` can act on whatever is highlighted without re-parsing the
-    rendered label, and so callers can read the same numbers without
-    scraping rendered text."""
+class NominationTable(DataTable):
+    """The full board of available players -- arrow-navigable, one row per
+    priced player who hasn't been sold. `n` nominates whatever row the
+    cursor sits on. A DataTable virtualizes rendering, so this stays cheap
+    at the full ~600-player board where a widget-per-row ListView would not.
+    """
 
-    def __init__(self, name: str, position: str, tier: str, value: str, adjusted: str):
-        super().__init__(Label(f"{name:<26}{position:<5}{tier:<7}{value:<7}{adjusted}"))
-        self.player_name = name
-        self.tier = tier
-        self.sheet_value = value
-        self.adjusted_value = adjusted
-
-
-class NominationList(ListView):
-    """The prepared nomination list, arrow-navigable, filtered to players who
-    are still available. `n` nominates whatever is highlighted."""
+    def on_mount(self) -> None:
+        self.cursor_type = "row"
+        self.add_columns("*", "Player", "Pos", "Tier", "Bye", "Sheet", "Adj", "ESPN", "Edge")
 
 
 class ConfirmBidScreen(ModalScreen[bool]):
@@ -168,19 +161,23 @@ class TextualWsApp(App):
     BINDINGS = [
         Binding("b", "bid", "bid +1"),
         Binding("n", "nominate", "nominate"),
+        Binding("space", "star", "star"),
+        Binding("slash", "search", "search"),
         Binding("colon", "command", "command"),
         Binding("q", "shutdown", "quit"),
     ]
 
     def __init__(self, ws, state: draft_state.DraftState,
                  resolver: draft_sync.PlayerResolver,
-                 vals: list[values.Valuation], nomination_list: list[str]):
+                 vals: list[values.Valuation], nomination_list: list[str],
+                 nomination_list_path=None):
         super().__init__()
         self.ws = ws
         self.state = state
         self.resolver = resolver
         self.vals = vals
-        self.nomination_names = nomination_list
+        self.starred: set[str] = set(nomination_list)
+        self.nomination_list_path = nomination_list_path
         self.lookup = {v.name.lower(): v for v in vals}
         self._log_player_id: int | None = None
         self._last_bid_team = ""
@@ -188,6 +185,12 @@ class TextualWsApp(App):
         self._pending_bid: tuple[int, int, float] | None = None
         self._init_backed_up = False  # back up draft-state.json once, before
                                        # the first INIT reconcile may prune it
+        self._nomination_list_backed_up = False
+        self._board_rows: list[auction.BoardRow] = []
+        self._board_query: str | None = None
+        self._board_position: str | None = None
+        self._board_starred_only = False
+        self._board_sort = "rank"
 
     def compose(self) -> ComposeResult:
         yield Banner(id="banner")
@@ -196,8 +199,9 @@ class TextualWsApp(App):
             yield BidLog(id="bidlog", markup=True, min_width=30, wrap=True)
             yield RosterPanel(id="roster")
         yield AnalysisPanel(id="analysis")
-        yield NominationList(id="nominations")
-        yield Input(id="command", placeholder="b 45 | undo | market | teams | best RB | need | me | quit")
+        yield NominationTable(id="nominations")
+        yield Input(id="command", placeholder="/name | pos QB | sort rec | star | "
+                    "b 45 | undo | market | teams | best RB | need | me | quit")
         yield Footer()
 
     async def on_mount(self) -> None:
@@ -206,18 +210,18 @@ class TextualWsApp(App):
         self.bidlog = self.query_one("#bidlog", BidLog)
         self.roster = self.query_one("#roster", RosterPanel)
         self.analysis = self.query_one("#analysis", AnalysisPanel)
-        self.nominations = self.query_one("#nominations", NominationList)
+        self.nominations = self.query_one("#nominations", NominationTable)
         self.command = self.query_one("#command", Input)
 
         self.bidlog.border_title = "Bid log (this nomination)"
         self.roster.border_title = "Your roster"
         self.analysis.border_title = "Analysis"
         self.nominations.border_title = (
-            "Nomination list (up/down to move, n to nominate) -- "
-            "name / pos / tier / sheet / adjusted")
+            "Board (up/down, n to nominate, space to star, / to search) -- "
+            "star / name / pos / tier / bye / sheet / adjusted / espn avg / edge")
         self.status.border_title = "STATUS"
 
-        await self._reload_nominations()
+        self._reload_board()
         self._refresh_panels()
         self.set_interval(POLL_INTERVAL_S, self._poll)
 
@@ -311,7 +315,7 @@ class TextualWsApp(App):
                 elif self.state.record_pick(name, position, event.price, team,
                                             espn_pick_id=event.player_id):
                     taken.add(name.lower())
-                    self.call_later(self._reload_nominations)
+                    self._reload_board()
                     match = self.lookup.get(name.lower())
                     note = (f" (sheet ${match.value}, {match.value - event.price:+d})"
                             if match else "")
@@ -347,7 +351,7 @@ class TextualWsApp(App):
                         self.banner.show(message)
                         self._flash(f"[green]{message}[/green]")
                     if report.added or report.removed:
-                        self.call_later(self._reload_nominations)
+                        self._reload_board()
 
         self._sync_pointer()
         self._refresh_panels()
@@ -549,60 +553,62 @@ class TextualWsApp(App):
             self._pending_bid = (player_id, amount, time.monotonic())
             self._flash(f"[green]Sent bid ${amount} on {name}.[/green]")
 
-    async def _reload_nominations(self) -> None:
-        """Rebuild the list from data/nomination-list.txt, filtered to players
-        who are still available. clear() defers its removals, so it has to be
-        awaited before the new rows go in.
+    def _reload_board(self) -> None:
+        """Rebuild the board from the full priced player pool, filtered to
+        who's still available and to the active search/position/star filter,
+        then sorted. clear() resets the cursor to row 0, so the previously
+        highlighted player's name is captured first and restored afterward
+        -- same convention the old list-based reload used, just against a
+        plain Python list instead of scraping mounted widgets."""
+        previous_name = (self._board_rows[self.nominations.cursor_row].name
+                          if self._board_rows else None)
 
-        This runs after every recorded sale, and clear() always resets the
-        highlight to None -- so the previously highlighted player's name is
-        captured first and restored afterward, rather than always landing
-        back on row 0."""
-        previous = self.nominations.highlighted_child
-        previous_name = previous.player_name if previous else None
+        inflation = self.state.inflation(self.vals)
+        self._board_rows = auction.nomination_board(
+            self.vals, self.state, inflation,
+            starred=self.starred, query=self._board_query,
+            position=self._board_position, starred_only=self._board_starred_only,
+            sort=self._board_sort,
+        )
 
-        await self.nominations.clear()
-        taken = self.state.taken()
-        for name in self.nomination_names:
-            if name in taken:
-                continue
-            match = self.lookup.get(name.lower())
-            await self.nominations.append(NominationRow(
-                name,
-                match.position if match else "?",
-                f"T{match.tier}" if match else "-",
-                f"${match.value}" if match else "-",
-                f"~${self._adjusted(match)}" if match else "-",
-            ))
+        self.nominations.clear()
+        for row in self._board_rows:
+            self.nominations.add_row(*self._board_cells(row))
 
-        # ListView.append() doesn't highlight anything on its own, and a
-        # freshly-rebuilt list needs something highlighted for arrow keys
-        # (and an immediate "n") to act on. Prefer restoring the player who
-        # was highlighted before the reload; fall back to row 0 if they're
-        # no longer in the list (e.g. they were the one just taken).
+        if not self._board_rows:
+            return
         if previous_name is not None:
-            for i, row in enumerate(self.nominations.children):
-                if row.player_name == previous_name:
-                    self.nominations.index = i
-                    break
-            else:
-                if self.nominations.children:
-                    self.nominations.index = 0
-        elif self.nominations.children:
-            self.nominations.index = 0
+            for i, row in enumerate(self._board_rows):
+                if row.name == previous_name:
+                    self.nominations.move_cursor(row=i)
+                    return
+        self.nominations.move_cursor(row=0)
+
+    def _board_cells(self, row: "auction.BoardRow") -> tuple:
+        v = row.valuation
+        edge_style = "green" if row.edge > 0 else "red" if row.edge < 0 else "dim"
+        return (
+            "*" if row.starred else "",
+            v.name,
+            v.position,
+            f"T{v.tier}",
+            str(v.bye) if v.bye else "-",
+            f"${v.value}",
+            f"${row.adjusted}",
+            f"${v.espn_avg:.0f}" if v.espn_avg is not None else "-",
+            Text.from_markup(f"[{edge_style}]{row.edge:+d}[/{edge_style}]"),
+        )
 
     def action_nominate(self) -> None:
         if self.ws.pointer.nominating_team != config.MY_TEAM_ID:
             self._flash("[yellow]It is not your nomination turn.[/yellow]")
             return
-        row = self.nominations.highlighted_child
-        if row is None:
+        if not self._board_rows:
             self._flash("[yellow]Nothing highlighted to nominate.[/yellow]")
             return
-        match = self.lookup.get(row.player_name.lower())
-        if not match or match.espn_id is None:
-            self._flash(f"[red]Unknown or unresolvable player: "
-                        f"{row.player_name}[/red]")
+        match = self._board_rows[self.nominations.cursor_row].valuation
+        if match.espn_id is None:
+            self._flash(f"[red]Unknown or unresolvable player: {match.name}[/red]")
             return
         try:
             self.ws.client.send_nomination(match.espn_id, 1)
@@ -611,6 +617,40 @@ class TextualWsApp(App):
                         "if urgent.")
         else:
             self._flash(f"[green]Nominated {match.name} at $1.[/green]")
+
+    def action_star(self) -> None:
+        if not self._board_rows:
+            return
+        name = self._board_rows[self.nominations.cursor_row].name
+        if name in self.starred:
+            self.starred.discard(name)
+        else:
+            self.starred.add(name)
+        self._save_starred()
+        self._reload_board()
+
+    def action_search(self) -> None:
+        self.command.display = True
+        self.command.value = "/"
+        self.command.cursor_position = len(self.command.value)
+        self.command.focus()
+
+    def _save_starred(self) -> None:
+        if self.nomination_list_path is None:
+            return
+        self._backup_nomination_list_once()
+        auction.save_nomination_list(self.nomination_list_path, sorted(self.starred))
+
+    def _backup_nomination_list_once(self) -> None:
+        """Back up data/nomination-list.txt before the first write of this
+        session, same convention as _backup_state_once below."""
+        if self._nomination_list_backed_up:
+            return
+        self._nomination_list_backed_up = True
+        path = self.nomination_list_path
+        if path.exists():
+            backup = path.with_suffix(path.suffix + ".bak")
+            backup.write_text(path.read_text())
 
     def _backup_state_once(self) -> None:
         """Back up draft-state.json before the first INIT reconcile of this
@@ -660,13 +700,50 @@ class TextualWsApp(App):
 
     def _run_command(self, line: str) -> None:
         """The same verbs the REPL dispatches, for everything not worth a
-        hotkey. Tables come from auction.py's builders so both consoles show
-        exactly the same numbers."""
+        hotkey, plus the board's own search/filter/sort verbs. Tables come
+        from auction.py's builders so both consoles show exactly the same
+        numbers."""
+        if line.startswith("/"):
+            self._board_query = line[1:].strip() or None
+            self._reload_board()
+            self._flash(f"Search: {self._board_query or '(cleared)'}")
+            return
+
         cmd = line.split()
         head = cmd[0].lower()
 
         if head in ("quit", "exit", "q"):
             self.exit()
+        elif head == "search":
+            self._board_query = " ".join(cmd[1:]).strip() or None
+            self._reload_board()
+            self._flash(f"Search: {self._board_query or '(cleared)'}")
+        elif head == "pos":
+            arg = cmd[1].upper() if len(cmd) > 1 else "ALL"
+            self._board_position = None if arg == "ALL" else arg
+            self._reload_board()
+            self._flash(f"Position filter: {self._board_position or 'all'}")
+        elif head == "sort":
+            key = cmd[1].lower() if len(cmd) > 1 else "rank"
+            if key not in auction.NOMINATION_BOARD_SORTS:
+                self._flash(f"[yellow]Unknown sort key. Use one of: "
+                            f"{', '.join(auction.NOMINATION_BOARD_SORTS)}[/yellow]")
+            else:
+                self._board_sort = key
+                self._reload_board()
+                self._flash(f"Sorted by {key}.")
+        elif head == "star":
+            arg = cmd[1].lower() if len(cmd) > 1 else "only"
+            self._board_starred_only = (arg != "all")
+            self._reload_board()
+            self._flash("Showing starred only." if self._board_starred_only
+                        else "Showing the full board.")
+        elif head == "clear":
+            self._board_query = None
+            self._board_position = None
+            self._board_starred_only = False
+            self._reload_board()
+            self._flash("Filters cleared.")
         elif head == "b":
             self._start_bid(cmd[1:])
         elif head == "me":
@@ -691,13 +768,14 @@ class TextualWsApp(App):
             removed = self.state.undo()
             self._flash(f"Removed: {removed}" if removed else "Nothing to undo.")
             self._refresh_panels()
-            self.call_later(self._reload_nominations)
+            self._reload_board()
         else:
-            self._flash("[yellow]Unrecognized.[/yellow] Use: b/undo/market/teams/"
-                        "best/need/me/quit")
+            self._flash("[yellow]Unrecognized.[/yellow] Use: /name, pos, sort, star, "
+                        "clear, b/undo/market/teams/best/need/me/quit")
 
 
 def run_ws_console(ws, state: draft_state.DraftState,
                    resolver: draft_sync.PlayerResolver,
-                   vals: list[values.Valuation], nomination_list: list[str]) -> None:
-    TextualWsApp(ws, state, resolver, vals, nomination_list).run()
+                   vals: list[values.Valuation], nomination_list: list[str],
+                   nomination_list_path=None) -> None:
+    TextualWsApp(ws, state, resolver, vals, nomination_list, nomination_list_path).run()

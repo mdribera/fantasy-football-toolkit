@@ -182,6 +182,122 @@ def test_bid_verdict_boundaries_match_the_market_and_typo_guard_cutoffs():
     assert auction.bid_verdict(61, 40).label == "overpaying"
 
 
+# --- nomination_board / save_nomination_list ---------------------------
+
+def _board_val(name, position, value, tier, bye=None, espn_avg=None):
+    return values.Valuation(
+        name=name, position=position, pro_team="", projected_points=0.0,
+        replacement_points=0.0, vorp=0.0, value=value, tier=tier,
+        bye=bye, espn_avg=espn_avg,
+    )
+
+
+BIG_BOARD = [
+    _board_val("Josh Allen", "QB", 40, 1, bye=7, espn_avg=33.76),
+    _board_val("Lamar Jackson", "QB", 33, 1, bye=8, espn_avg=45.0),
+    _board_val("Bijan Robinson", "RB", 43, 2, bye=5, espn_avg=60.0),
+    _board_val("Kenneth Walker III", "RB", 38, 2, bye=10, espn_avg=28.0),
+    _board_val("Justin Jefferson", "WR", 52, 1, bye=6, espn_avg=55.0),
+]
+
+
+def _board_state(taken_players=()):
+    state = draft_state.DraftState(my_team="ME")
+    for i, name in enumerate(taken_players):
+        state.purchases.append(
+            draft_state.Purchase(player=name, position="RB", price=1, team="ME")
+        )
+    return state
+
+
+def test_nomination_board_hides_taken_players():
+    state = _board_state(["Josh Allen"])
+    rows = auction.nomination_board(BIG_BOARD, state, inflation=1.0)
+    assert "Josh Allen" not in [r.name for r in rows]
+    assert len(rows) == len(BIG_BOARD) - 1
+
+
+def test_nomination_board_availability_is_case_insensitive():
+    # taken() stores names as recorded; the board must not show a player
+    # back to back with a different-case spelling of an already-sold name.
+    state = _board_state(["josh allen"])
+    rows = auction.nomination_board(BIG_BOARD, state, inflation=1.0)
+    assert "Josh Allen" not in [r.name for r in rows]
+
+
+def test_nomination_board_applies_inflation_to_adjusted():
+    state = _board_state()
+    rows = auction.nomination_board(BIG_BOARD, state, inflation=1.5)
+    allen = next(r for r in rows if r.name == "Josh Allen")
+    assert allen.adjusted == 60
+    assert allen.edge == 40 - 60
+
+
+def test_nomination_board_query_filters_by_substring_case_insensitive():
+    state = _board_state()
+    rows = auction.nomination_board(BIG_BOARD, state, inflation=1.0, query="jack")
+    assert [r.name for r in rows] == ["Lamar Jackson"]
+
+
+def test_nomination_board_position_filter():
+    state = _board_state()
+    rows = auction.nomination_board(BIG_BOARD, state, inflation=1.0, position="rb")
+    assert {r.name for r in rows} == {"Bijan Robinson", "Kenneth Walker III"}
+
+
+def test_nomination_board_starred_only():
+    state = _board_state()
+    rows = auction.nomination_board(
+        BIG_BOARD, state, inflation=1.0,
+        starred={"Josh Allen"}, starred_only=True,
+    )
+    assert [r.name for r in rows] == ["Josh Allen"]
+    assert rows[0].starred is True
+
+
+def test_nomination_board_starred_rows_lead_regardless_of_sort():
+    state = _board_state()
+    rows = auction.nomination_board(
+        BIG_BOARD, state, inflation=1.0,
+        starred={"Kenneth Walker III"}, sort="rank",
+    )
+    assert rows[0].name == "Kenneth Walker III"
+
+
+def test_nomination_board_sort_rec_orders_by_edge_descending():
+    state = _board_state()
+    rows = auction.nomination_board(BIG_BOARD, state, inflation=0.5, sort="rec")
+    edges = [r.edge for r in rows]
+    assert edges == sorted(edges, reverse=True)
+
+
+def test_nomination_board_sort_bye():
+    state = _board_state()
+    rows = auction.nomination_board(BIG_BOARD, state, inflation=1.0, sort="bye")
+    byes = [r.valuation.bye for r in rows]
+    assert byes == sorted(byes, reverse=True)
+
+
+def test_nomination_board_sort_name_ascending():
+    state = _board_state()
+    rows = auction.nomination_board(BIG_BOARD, state, inflation=1.0, sort="name")
+    names = [r.name for r in rows]
+    assert names == sorted(names)
+
+
+def test_save_nomination_list_round_trips(tmp_path):
+    path = tmp_path / "nomination-list.txt"
+    auction.save_nomination_list(path, ["Josh Allen", "Bijan Robinson"])
+    assert auction.load_nomination_list(path) == ["Josh Allen", "Bijan Robinson"]
+
+
+def test_save_nomination_list_empty_list_writes_empty_file(tmp_path):
+    path = tmp_path / "nomination-list.txt"
+    auction.save_nomination_list(path, [])
+    assert path.read_text() == ""
+    assert auction.load_nomination_list(path) == []
+
+
 def test_bid_verdict_without_a_sheet_value_is_neutral():
     verdict = auction.bid_verdict(40, None)
     assert verdict.label == "unpriced"

@@ -33,6 +33,9 @@ class PlayerRow:
     percent_owned: float = 0.0
     injury_status: str = ""
     bye_week: int | None = None
+    espn_avg: float | None = None     # ESPN's own average auction value across
+                                       # its user base -- a market anchor read,
+                                       # not a price, and built for a 1QB market
     rostered_by: str | None = None
     draft_cost: int | None = None     # auction price paid, if drafted
 
@@ -120,9 +123,62 @@ def rostered_players(league: League) -> list[PlayerRow]:
     return rows
 
 
+def bye_weeks(league: League) -> dict[str, int]:
+    """Pro team abbreviation -> bye week, from ESPN's schedule view.
+
+    Keyed on the same abbreviation PlayerRow.pro_team already carries, so
+    joining this onto a pool of players is a plain dict lookup.
+    """
+    try:
+        data = league.espn_request.get_pro_schedule()
+    except Exception:
+        return {}
+    teams = data.get("settings", {}).get("proTeams", [])
+    return {
+        t["abbrev"]: t["byeWeek"]
+        for t in teams
+        if t.get("abbrev") and t.get("byeWeek")
+    }
+
+
+def auction_averages(league: League, size: int = 600) -> dict[int, float]:
+    """ESPN player id -> its ownership.auctionValueAverage across ESPN's user
+    base. This is a market-anchor read for a 1QB format, never a price for
+    this league -- callers must not present it as one.
+
+    Returns an empty dict on any failure so a bad pull degrades the caller's
+    column to missing data rather than blocking a values.json rebuild.
+    """
+    try:
+        filt = {"players": {"limit": size,
+                             "sortPercOwned": {"sortAsc": False, "sortPriority": 1}}}
+        data = league.espn_request.league_get(
+            params={"view": "kona_player_info"},
+            headers={"x-fantasy-filter": json.dumps(filt)},
+        )
+    except Exception:
+        return {}
+    out: dict[int, float] = {}
+    for entry in data.get("players", []):
+        player = entry.get("player", {})
+        avg = player.get("ownership", {}).get("auctionValueAverage")
+        player_id = player.get("id")
+        if player_id is not None and avg is not None:
+            out[player_id] = float(avg)
+    return out
+
+
 def full_player_pool(league: League, fa_size: int = 500) -> list[PlayerRow]:
-    """Everyone rostered plus the top free agents."""
-    return rostered_players(league) + free_agents(league, size=fa_size)
+    """Everyone rostered plus the top free agents, with bye week and ESPN's
+    average auction value joined on afterward."""
+    rows = rostered_players(league) + free_agents(league, size=fa_size)
+    byes = bye_weeks(league)
+    averages = auction_averages(league)
+    for row in rows:
+        row.bye_week = byes.get(row.pro_team)
+        if row.espn_id is not None:
+            row.espn_avg = averages.get(row.espn_id)
+    return rows
 
 
 def draft_results(league: League) -> list[dict]:
