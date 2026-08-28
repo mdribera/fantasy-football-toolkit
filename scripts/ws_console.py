@@ -118,16 +118,18 @@ class BidLog(RichLog):
 
 
 class RosterPanel(Static):
-    """Budget and starting-slot summary, always exactly two lines. The
-    player list lives in the sibling RosterTable -- a plain Static's "auto"
-    height is fixed at whatever it measured on the first render, and does
-    not grow as reactives add more lines to the text later, so a name list
-    here would silently clip once the roster grew past that first size."""
+    """Budget and starting-slot summary -- two logical lines, which may wrap
+    within the panel's width as the slot hints grow, but never grow in
+    *count*. The player list lives in the sibling RosterTable instead: an
+    ever-growing list of names is exactly the shape of content a plain
+    Static's "auto" height doesn't reliably keep up with once it's already
+    mounted, which is what clipped the roster panel before (see T20)."""
 
     budget_left = reactive(config.SALARY_CAP)
     spots_left = reactive(config.ROSTER_SIZE)
     max_bid_amount = reactive(0)
     slots = reactive(())    # tuple[tuple[str, int, int, int], ...] pos, have, need, target
+    bye_clash = reactive(None)   # bye week two rostered QBs share, or None
 
     def _slot_label(self, pos: str, have: int, need: int, target: int) -> str:
         color = "green" if have >= need else "yellow"
@@ -139,6 +141,9 @@ class RosterPanel(Static):
         if have >= need and have < target:
             hint = "3rd for byes" if pos == "QB" else f"want {target}"
             label += f" ({hint})"
+        if pos == "QB" and self.bye_clash is not None:
+            color = "red"
+            label += f" bye clash wk{self.bye_clash}!"
         return f"[{color}]{label}[/]"
 
     def render(self) -> Text:
@@ -167,10 +172,12 @@ class AnalysisPanel(Static):
     tier_line = reactive("")
     market_line = reactive("")
     verdict_line = reactive("")
+    bye_line = reactive("")
     best_line = reactive("")
 
     def render(self) -> Text:
-        rows = [self.tier_line, self.market_line, self.verdict_line, self.best_line]
+        rows = [self.tier_line, self.market_line, self.verdict_line,
+                self.bye_line, self.best_line]
         body = "\n".join(r for r in rows if r)
         return Text.from_markup(body or "[dim]Nothing nominated.[/dim]")
 
@@ -184,7 +191,7 @@ class NominationTable(DataTable):
 
     def on_mount(self) -> None:
         self.cursor_type = "row"
-        self.add_columns("*", "Player", "Pos", "Tier", "Bye", "Sheet", "Adj", "ESPN", "Edge")
+        self.add_columns("*", "Player", "Pos", "Need", "Tier", "Bye", "Sheet", "Adj", "ESPN", "Edge")
 
 
 class ConfirmBidScreen(ModalScreen[bool]):
@@ -287,11 +294,15 @@ class TextualWsApp(App):
 
         self.bidlog.border_title = "Bid log (this nomination)"
         self.query_one("#roster", Vertical).border_title = "Your roster"
-        self.analysis.border_title = "Analysis"
+        self.analysis.border_title = (
+            "Analysis -- Market: per-position forward-looking price read; "
+            "Best remaining: top players left, scoped to the position shown")
         self.nominations.border_title = (
             "Board (up/down, n to nominate, space to star, / to search) -- "
             "star / name / pos / tier / bye / sheet / adjusted / espn avg / edge")
-        self.status.border_title = "STATUS"
+        self.status.border_title = (
+            "STATUS -- Sheet: your model's price; Adjusted: Sheet adjusted "
+            "for how the room is actually paying")
 
         self._reload_board()
         self._refresh_panels()
@@ -530,6 +541,7 @@ class TextualWsApp(App):
             for pos, required in config.STARTERS.items()
             if pos != "FLEX"
         )
+        self.roster.bye_clash = auction.rostered_qb_bye_clash(self.state, me, self.vals)
         self.roster_table.clear()
         for p in self.state.purchases:
             if p.team == me:
@@ -558,6 +570,7 @@ class TextualWsApp(App):
             self.analysis.tier_line = ""
             self.analysis.market_line = ""
             self.analysis.verdict_line = ""
+            self.analysis.bye_line = ""
             self.analysis.best_line = ""
             return
 
@@ -594,10 +607,18 @@ class TextualWsApp(App):
             self.analysis.verdict_line = (
                 f"Verdict: [{verdict.style}]{verdict.label}[/{verdict.style}] "
                 f"at ${pointer.high_bid}")
+
+            if auction.qb_bye_would_clash(self.state, self.state.my_team, self.vals, match):
+                self.analysis.bye_line = (
+                    f"[bold red]Bye clash: you already have a QB on week "
+                    f"{match.bye}.[/bold red]")
+            else:
+                self.analysis.bye_line = ""
         else:
             self.analysis.tier_line = f"[dim]{name} is not on your board.[/dim]"
             self.analysis.market_line = ""
             self.analysis.verdict_line = ""
+            self.analysis.bye_line = ""
 
         need = self._neediest_position()
         pool = sorted(
@@ -686,9 +707,11 @@ class TextualWsApp(App):
             sort=self._board_sort,
         )
 
+        needs = self.state.needs(self.state.my_team)
+        targets = self.state.targets(self.state.my_team)
         self.nominations.clear()
         for row in self._board_rows:
-            self.nominations.add_row(*self._board_cells(row))
+            self.nominations.add_row(*self._board_cells(row, needs, targets))
 
         if not self._board_rows:
             return
@@ -699,13 +722,25 @@ class TextualWsApp(App):
                     return
         self.nominations.move_cursor(row=0)
 
-    def _board_cells(self, row: "auction.BoardRow") -> tuple:
+    def _need_marker(self, position: str, needs: dict, targets: dict) -> Text:
+        """!! for an unfilled starting slot, . for unfilled bench depth
+        (config.ROSTER_TARGETS -- most consequential at QB, where the third
+        exists for byes and the in-season waiver wire is empty), blank once
+        the position is fully covered."""
+        if needs.get(position, 0) > 0:
+            return Text("!!", style="bold red")
+        if targets.get(position, 0) > 0:
+            return Text(".", style="yellow")
+        return Text("")
+
+    def _board_cells(self, row: "auction.BoardRow", needs: dict, targets: dict) -> tuple:
         v = row.valuation
         edge_style = "green" if row.edge > 0 else "red" if row.edge < 0 else "dim"
         return (
             "*" if row.starred else "",
             v.name,
             v.position,
+            self._need_marker(v.position, needs, targets),
             f"T{v.tier}",
             str(v.bye) if v.bye else "-",
             f"${v.value}",

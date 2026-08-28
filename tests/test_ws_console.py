@@ -32,6 +32,18 @@ FIXTURE_ROWS = [
      "value": 52, "tier": 1, "espn_id": 3915514},
 ]
 
+QB_FIXTURE_ROWS = FIXTURE_ROWS + [
+    {"name": "Josh Allen", "position": "QB", "pro_team": "BUF",
+     "projected_points": 400.0, "replacement_points": 200.0, "vorp": 200.0,
+     "value": 60, "tier": 1, "espn_id": 3918298, "bye": 7},
+    {"name": "Lamar Jackson", "position": "QB", "pro_team": "BAL",
+     "projected_points": 380.0, "replacement_points": 200.0, "vorp": 180.0,
+     "value": 50, "tier": 1, "espn_id": 3916387, "bye": 7},
+    {"name": "Jayden Daniels", "position": "QB", "pro_team": "WSH",
+     "projected_points": 360.0, "replacement_points": 200.0, "vorp": 160.0,
+     "value": 45, "tier": 1, "espn_id": 4426348, "bye": 12},
+]
+
 
 class FakeClient:
     """Stands in for DraftRoomClient: records sends, never opens a socket."""
@@ -114,12 +126,12 @@ def _roster_rows(app) -> list[tuple]:
 
 
 def make_app(tmp_path, nomination_list=("Justin Jefferson", "Kenneth Walker III"),
-             nomination_list_path=None):
+             nomination_list_path=None, rows=FIXTURE_ROWS):
     """Returns (app, ws, state). state_path is always under tmp_path: the
     DraftState default writes over the real live-draft file."""
     values_path = tmp_path / "values.json"
-    values_path.write_text(json.dumps(FIXTURE_ROWS))
-    vals = [values.Valuation(**row) for row in FIXTURE_ROWS]
+    values_path.write_text(json.dumps(rows))
+    vals = [values.Valuation(**row) for row in rows]
     state = draft_state.DraftState(my_team="ME", state_path=tmp_path / "draft-state.json")
     resolver = draft_sync.PlayerResolver(values_path)
     ws = FakeWsController()
@@ -490,6 +502,41 @@ async def test_roster_header_flags_the_third_qb_for_byes(tmp_path):
         text = str(app.roster.render())
         assert "QB 2/2" in text
         assert "3rd for byes" in text
+
+
+@pytest.mark.asyncio
+async def test_roster_header_flags_a_qb_bye_clash(tmp_path):
+    """T8: two rostered QBs sharing a bye defeats the whole point of
+    carrying a third one -- the roster header has to say so, not just the
+    starting-slot count."""
+    app, ws, state = make_app(tmp_path, rows=QB_FIXTURE_ROWS)
+    state.record("Josh Allen", "QB", 60, "ME")
+    state.record("Lamar Jackson", "QB", 40, "ME")   # same bye week, 7
+    async with app.run_test() as pilot:
+        app._refresh_panels()
+        await pilot.pause()
+        text = str(app.roster.render())
+        assert "bye clash wk7" in text
+
+
+@pytest.mark.asyncio
+async def test_analysis_flags_a_qb_bye_clash_on_the_nominated_player(tmp_path):
+    """T8: nominating a QB who'd share a bye with one already on the roster
+    has to be visible before the bid goes in, not discovered afterward."""
+    app, ws, state = make_app(tmp_path, rows=QB_FIXTURE_ROWS)
+    state.record("Josh Allen", "QB", 60, "ME")       # bye week 7
+    async with app.run_test() as pilot:
+        ws.feed(draft_ws.Bid(4, 3916387, 30, 25000, 12731))   # Lamar Jackson, also bye 7
+        await app._poll()
+        await pilot.pause()
+        assert "Bye clash" in app.analysis.bye_line
+        assert "week 7" in app.analysis.bye_line
+
+        ws.feed(draft_ws.Sold(4, 3916387, 1, 30, 0))
+        ws.feed(draft_ws.Bid(4, 4426348, 30, 25000, 12731))   # Jayden Daniels, bye 12
+        await app._poll()
+        await pilot.pause()
+        assert app.analysis.bye_line == ""
 
 
 @pytest.mark.asyncio
@@ -1268,6 +1315,39 @@ async def test_board_rows_carry_tier_and_adjusted_value(tmp_path):
     assert row.valuation.value == 52
     assert row.adjusted == 52            # no sales yet, inflation is 1.0
     assert row.starred is True
+
+
+@pytest.mark.asyncio
+async def test_board_need_column_flags_unfilled_starters_and_targets(tmp_path):
+    """T8: the board should point at where the dollars have to go without
+    switching to the `need` command -- an unfilled starting slot (RB, WR)
+    reads differently from unfilled bench depth once starters are covered,
+    and a fully covered position reads as neither."""
+    app, ws, state = make_app(tmp_path, rows=QB_FIXTURE_ROWS)
+    state.record("Josh Allen", "QB", 60, "ME")
+    state.record("Lamar Jackson", "QB", 40, "ME")   # 2 starting QB slots filled
+    async with app.run_test() as pilot:
+        app._reload_board()
+        await pilot.pause()
+        needs = state.needs("ME")
+        targets = state.targets("ME")
+
+        rb_marker = app._need_marker("RB", needs, targets)   # 0/2 starters
+        qb_marker = app._need_marker("QB", needs, targets)   # 2/2 starters, 2/3 target
+        assert "!!" in str(rb_marker)
+        assert "!!" not in str(qb_marker)
+        assert "." in str(qb_marker)
+
+        # Fill every remaining target so nothing is left to flag.
+        for pos in ("RB", "RB", "RB", "RB", "WR", "WR", "WR", "WR", "WR",
+                    "TE", "TE", "D/ST", "K", "Jayden Daniels"):
+            if pos == "Jayden Daniels":
+                state.record(pos, "QB", 1, "ME")
+            else:
+                state.record(f"Filler {pos} {state.roster_count('ME')}", pos, 1, "ME")
+        needs, targets = state.needs("ME"), state.targets("ME")
+        complete_marker = app._need_marker("RB", needs, targets)
+        assert str(complete_marker) == ""
 
 
 @pytest.mark.asyncio

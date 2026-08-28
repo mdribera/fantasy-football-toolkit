@@ -167,6 +167,54 @@ def test_next_equivalent_returns_none_when_the_position_is_exhausted():
     assert auction.next_equivalent(BOARD, taken, "RB", 2, "Bijan Robinson") is None
 
 
+# --- QB bye clash (T8) --------------------------------------------------
+
+def _qb(name, bye):
+    return values.Valuation(
+        name=name, position="QB", pro_team="", projected_points=0.0,
+        replacement_points=0.0, vorp=0.0, value=1, bye=bye,
+    )
+
+
+QB_BOARD = [_qb("Josh Allen", 7), _qb("Lamar Jackson", 7), _qb("Jayden Daniels", 12)]
+
+
+def test_rostered_qb_bye_clash_finds_a_shared_bye():
+    state = draft_state.DraftState(my_team="ME")
+    state.record("Josh Allen", "QB", 60, "ME")
+    state.record("Lamar Jackson", "QB", 40, "ME")
+    assert auction.rostered_qb_bye_clash(state, "ME", QB_BOARD) == 7
+
+
+def test_rostered_qb_bye_clash_is_none_when_byes_differ():
+    state = draft_state.DraftState(my_team="ME")
+    state.record("Josh Allen", "QB", 60, "ME")
+    state.record("Jayden Daniels", "QB", 39, "ME")
+    assert auction.rostered_qb_bye_clash(state, "ME", QB_BOARD) is None
+
+
+def test_qb_bye_would_clash_checks_a_candidate_before_buying():
+    state = draft_state.DraftState(my_team="ME")
+    state.record("Josh Allen", "QB", 60, "ME")
+    lamar = next(v for v in QB_BOARD if v.name == "Lamar Jackson")
+    daniels = next(v for v in QB_BOARD if v.name == "Jayden Daniels")
+    assert auction.qb_bye_would_clash(state, "ME", QB_BOARD, lamar) is True
+    assert auction.qb_bye_would_clash(state, "ME", QB_BOARD, daniels) is False
+
+
+def test_qb_bye_would_clash_ignores_non_qb_and_bye_free_players():
+    state = draft_state.DraftState(my_team="ME")
+    state.record("Josh Allen", "QB", 60, "ME")
+    non_qb = values.Valuation(name="Some RB", position="RB", pro_team="",
+                              projected_points=0.0, replacement_points=0.0,
+                              vorp=0.0, value=1, bye=7)
+    no_bye = values.Valuation(name="No Bye QB", position="QB", pro_team="",
+                              projected_points=0.0, replacement_points=0.0,
+                              vorp=0.0, value=1, bye=None)
+    assert auction.qb_bye_would_clash(state, "ME", QB_BOARD, non_qb) is False
+    assert auction.qb_bye_would_clash(state, "ME", QB_BOARD, no_bye) is False
+
+
 def test_bid_verdict_bands():
     assert auction.bid_verdict(30, 40).label == "good value"
     assert auction.bid_verdict(40, 40).label == "fair"

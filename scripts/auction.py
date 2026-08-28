@@ -340,6 +340,35 @@ def next_equivalent(vals: list["values.Valuation"], taken: set[str], position: s
     return max((v for v in pool if v.tier == best_tier), key=lambda v: v.value)
 
 
+def rostered_qb_bye_clash(state: draft_state.DraftState, team: str,
+                          vals: list["values.Valuation"]) -> int | None:
+    """Bye week shared by two or more of `team`'s already-rostered QBs, if
+    any. The third QB exists specifically to cover a started QB's bye --
+    two QBs who share a bye defeat the whole point of carrying one."""
+    lookup = {v.name: v.bye for v in vals}
+    byes: dict[int, int] = {}
+    for p in state.purchases:
+        if p.team == team and p.position == "QB":
+            bye = lookup.get(p.player)
+            if bye is not None:
+                byes[bye] = byes.get(bye, 0) + 1
+    return next((bye for bye, count in byes.items() if count >= 2), None)
+
+
+def qb_bye_would_clash(state: draft_state.DraftState, team: str,
+                       vals: list["values.Valuation"],
+                       candidate: "values.Valuation") -> bool:
+    """Whether buying `candidate` would put two of `team`'s QBs on the same
+    bye -- checked against a QB being actively considered, before the
+    purchase happens, rather than only ever caught after the fact."""
+    if candidate.position != "QB" or candidate.bye is None:
+        return False
+    lookup = {v.name: v.bye for v in vals}
+    return any(p.team == team and p.position == "QB"
+              and lookup.get(p.player) == candidate.bye
+              for p in state.purchases)
+
+
 DEFAULT_JOIN_URL_FILE = Path(__file__).resolve().parents[1] / "data" / "join-url.txt"
 
 
