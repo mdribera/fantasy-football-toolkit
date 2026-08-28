@@ -131,6 +131,18 @@ def compute_values(
     """
     positions = list(positions)
 
+    # Guard: ensure replacement ranks won't overflow the roster-spot cap.
+    # The top-N draftable clip is only safe if at most N players have positive VORP,
+    # which requires sum(rank - 1) <= TOTAL_ROSTER_SPOTS. A config change violating
+    # this would silently zero out real players' surplus instead of failing loudly.
+    replacement_rank_sum = sum(replacement.rank_for(pos) - 1 for pos in positions)
+    if replacement_rank_sum > config.TOTAL_ROSTER_SPOTS:
+        raise ValueError(
+            f"Replacement rank sum ({replacement_rank_sum}) exceeds TOTAL_ROSTER_SPOTS "
+            f"({config.TOTAL_ROSTER_SPOTS}). The top-{config.TOTAL_ROSTER_SPOTS} draftable "
+            f"clip would silently zero out real players' surplus. Check config.REPLACEMENT."
+        )
+
     baselines = {pos: replacement_points(players, pos, replacement) for pos in positions}
 
     raw: list[Valuation] = []
