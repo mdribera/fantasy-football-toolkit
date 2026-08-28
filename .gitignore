@@ -2,6 +2,9 @@
 .env
 .env.local
 
+# Git worktrees for isolated task work
+.worktrees/
+
 # Cached data pulls, draft state, recordings
 data/*
 !data/.gitkeep
