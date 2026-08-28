@@ -560,14 +560,14 @@ class TextualWsApp(App):
                     f"[yellow]Tier {match.tier} {match.position} -- last one. "
                     f"Next tier: {equivalent.name} (${equivalent.value})[/yellow]")
 
-            by_position = self.state.inflation_by_position(self.vals)
+            by_position = self.state.forward_inflation_by_position(self.vals)
             if match.position in by_position:
                 rate, scope = by_position[match.position], match.position
             else:
-                rate, scope = self.state.inflation(self.vals), "overall"
+                rate, scope = self.state.forward_inflation(self.vals), "overall"
             read = ("over sheet" if rate > 1.1 else
                     "under sheet" if rate < 0.9 else "at sheet")
-            self.analysis.market_line = f"Market: {scope} paying x{rate:.2f} ({read})"
+            self.analysis.market_line = f"Market: {scope} projected x{rate:.2f} ({read})"
 
             verdict = auction.bid_verdict(pointer.high_bid, self._adjusted(match))
             self.analysis.verdict_line = (

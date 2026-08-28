@@ -432,6 +432,25 @@ async def test_analysis_verdict_reflects_the_current_high(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_analysis_market_line_is_forward_looking_and_tilted(tmp_path):
+    """Regression for T6: the market line must read the same forward,
+    per-position number that drives the verdict right below it, not the
+    backward-looking "what's already sold" rate -- otherwise the two lines
+    can tell contradictory stories about the same nomination."""
+    app, ws, state = make_app(tmp_path)
+    _stub_closed_league(state, app.vals)
+    state.record("Tony Pollard", "RB", 30, "RIVAL")  # sheet $22 -- an RB overpay
+    async with app.run_test() as pilot:
+        ws.feed(draft_ws.Bid(4, 3915511, 44, 25000, 12731))   # Bijan Robinson, RB
+        await app._poll()
+        await pilot.pause()
+        assert "projected" in app.analysis.market_line
+        assert "RB" in app.analysis.market_line
+        expected = state.forward_inflation_by_position(app.vals)["RB"]
+        assert f"x{expected:.2f}" in app.analysis.market_line
+
+
+@pytest.mark.asyncio
 async def test_analysis_best_remaining_targets_the_neediest_position(tmp_path):
     app, ws, state = make_app(tmp_path)
     async with app.run_test() as pilot:

@@ -651,11 +651,15 @@ def show_teams(state: draft_state.DraftState) -> None:
 
 def market_table(state: draft_state.DraftState,
                  vals: list[values.Valuation]) -> Table:
-    table = Table(title=f"Market vs sheet -- overall x{state.inflation(vals):.2f}")
+    """What the room's remaining money projects to pay at each position,
+    forward-looking (see DraftState.forward_inflation_by_position) -- the
+    "buy here" / "let these go" call is inherently about what's still ahead,
+    not a record of what already sold."""
+    table = Table(title=f"Market vs sheet -- overall x{state.forward_inflation(vals):.2f} forward")
     table.add_column("Pos")
-    table.add_column("Paying", justify="right")
+    table.add_column("Forward", justify="right")
     table.add_column("Read")
-    for pos, rate in sorted(state.inflation_by_position(vals).items(),
+    for pos, rate in sorted(state.forward_inflation_by_position(vals).items(),
                             key=lambda kv: kv[1], reverse=True):
         if rate > 1.1:
             read = "[red]over sheet -- let these go[/red]"
