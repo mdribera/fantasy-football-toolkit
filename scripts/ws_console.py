@@ -31,29 +31,59 @@ POLL_INTERVAL_S = 0.3  # matches the cadence of the printer thread it replaces
 
 class Banner(Static):
     """Full-width alert line. Hidden until something needs to be impossible
-    to miss: your nomination turn, or a watchdog/reconnect alert."""
+    to miss: your nomination turn, or a watchdog/reconnect alert.
+
+    Alerts queue rather than silently overwrite each other: whatever was
+    showing when a new one arrives waits behind it instead of vanishing.
+    `escape` (see TextualWsApp.action_dismiss_banner) dismisses whatever is
+    showing and reveals the next, oldest first, so two alerts landing close
+    together during a live draft don't cost Mark the first one."""
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
-        self._disconnect = False
+        self._current: tuple[str, bool, bool] | None = None  # message, alert, disconnect
+        self._queue: list[tuple[str, bool, bool]] = []
 
     def show(self, message: str, alert: bool = False, disconnect: bool = False) -> None:
-        self.update(Text(message))
-        self.set_class(alert, "alert")
+        if self.display and self._current is not None:
+            self._queue.append(self._current)
+        self._current = (message, alert, disconnect)
         self.display = True
-        self._disconnect = disconnect
+        self._render_current()
 
     def hide(self) -> None:
         self.display = False
-        self._disconnect = False
+        self._current = None
+        self._queue.clear()
+
+    def dismiss(self) -> None:
+        """Drop whatever is showing and reveal the next queued alert, oldest
+        first, or hide entirely once nothing is left."""
+        if not self.display:
+            return
+        if self._queue:
+            self._current = self._queue.pop(0)
+            self._render_current()
+        else:
+            self.hide()
 
     def clear_disconnect(self) -> None:
-        """Hide the banner, but only if it's still showing the disconnect
-        alert specifically -- any other alert that has since taken the
-        banner (a watchdog trip, a bid confirmation failure, a reconcile
-        mismatch) must persist until manually checked."""
-        if self._disconnect:
-            self.hide()
+        """Drop the disconnect alert specifically, wherever it is -- showing
+        now, or still waiting behind something else -- so a healed
+        connection can't leave a stale "reconnecting" message to surface
+        later once the banner in front of it gets dismissed. Any other alert
+        (a watchdog trip, a bid confirmation failure, a reconcile mismatch)
+        that has since taken the banner is left untouched."""
+        self._queue = [item for item in self._queue if not item[2]]
+        if self._current is not None and self._current[2]:
+            self.dismiss()
+
+    def _render_current(self) -> None:
+        message, alert, _ = self._current
+        text = message + (f"  (+{len(self._queue)} more, esc to dismiss)"
+                          if self._queue else "  (esc to dismiss)")
+        self.update(Text(text))
+        self.set_class(alert, "alert")
 
 
 class StatusPanel(Static):
@@ -190,6 +220,7 @@ class TextualWsApp(App):
         Binding("space", "star", "star"),
         Binding("slash", "search", "search"),
         Binding("colon", "command", "command"),
+        Binding("escape", "dismiss_banner", "dismiss"),
         Binding("q", "shutdown", "quit"),
     ]
 
@@ -554,6 +585,14 @@ class TextualWsApp(App):
     def action_shutdown(self) -> None:
         self.exit()
 
+    def action_dismiss_banner(self) -> None:
+        # A busy command line owns escape for its own purposes (clearing
+        # its text, in Textual's own Input widget); stealing it here would
+        # eat a keystroke Mark meant for what he's typing.
+        if self.command.has_focus:
+            return
+        self.banner.dismiss()
+
     def action_bid(self) -> None:
         self._start_bid([])
 
@@ -730,9 +769,11 @@ class TextualWsApp(App):
         # A watchdog/reconnect alert or a LIVE FEED ERROR also shows on this
         # banner and must survive the next Nomination or Sold event -- those
         # fire constantly during a live draft and would otherwise wipe an
-        # alert before it's been seen.
+        # alert before it's been seen. dismiss() rather than a flat hide():
+        # if an alert got queued behind the turn banner (superseded, not
+        # dismissed), it must be revealed now rather than destroyed.
         if not self.banner.has_class("alert"):
-            self.banner.hide()
+            self.banner.dismiss()
 
     def action_command(self) -> None:
         self.command.display = True

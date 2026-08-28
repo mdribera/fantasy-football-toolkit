@@ -565,6 +565,72 @@ async def test_disconnect_banner_does_not_wipe_a_later_alert_on_reconnect(tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_banner_queues_a_second_alert_instead_of_erasing_the_first(tmp_path):
+    """Regression for the 2026-08-27 rehearsal: alerts never cleared, and a
+    second one silently overwrote the first with no trace it ever existed.
+    show() now queues the superseded alert instead of dropping it, and
+    dismiss() reveals it -- oldest first -- rather than jumping straight to
+    hidden."""
+    app, _, _ = make_app(tmp_path)
+    async with app.run_test():
+        banner = app.banner
+        banner.show("first alert", alert=True)
+        banner.show("second alert", alert=True)
+        assert "second alert" in str(banner.content)
+        assert "more" in str(banner.content)
+
+        banner.dismiss()
+        assert banner.display
+        assert "first alert" in str(banner.content)
+        assert "more" not in str(banner.content)
+
+        banner.dismiss()
+        assert not banner.display
+
+
+@pytest.mark.asyncio
+async def test_clear_disconnect_purges_a_queued_disconnect_alert(tmp_path):
+    """A disconnect alert that got queued behind something else must not
+    resurface once the connection has healed and that something else is
+    dismissed."""
+    app, _, _ = make_app(tmp_path)
+    async with app.run_test():
+        banner = app.banner
+        banner.show("disconnected -- reconnecting", alert=True, disconnect=True)
+        banner.show("watchdog trip", alert=True)
+        banner.clear_disconnect()
+        banner.dismiss()
+        assert not banner.display      # the queued disconnect alert is gone, not revealed
+
+
+@pytest.mark.asyncio
+async def test_escape_dismisses_the_current_banner_in_the_running_app(tmp_path):
+    app, ws, _ = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        ws.alerts.append("no frames received in 45s -- forcing reconnect")
+        await app._poll()
+        await pilot.pause()
+        assert app.banner.display
+        await pilot.press("escape")
+        await pilot.pause()
+        assert not app.banner.display
+
+
+@pytest.mark.asyncio
+async def test_escape_does_not_dismiss_while_the_command_line_has_focus(tmp_path):
+    app, ws, _ = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        ws.alerts.append("no frames received in 45s -- forcing reconnect")
+        await app._poll()
+        await pilot.pause()
+        app.command.display = True
+        app.command.focus()
+        await pilot.press("escape")
+        await pilot.pause()
+        assert app.banner.display
+
+
+@pytest.mark.asyncio
 async def test_drained_alerts_and_feed_errors_also_land_in_the_bid_log(tmp_path):
     app, ws, _ = make_app(tmp_path)
     async with app.run_test() as pilot:
