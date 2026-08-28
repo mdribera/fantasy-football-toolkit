@@ -534,8 +534,13 @@ def nomination_board(
             continue
         if query and query.lower() not in v.name.lower():
             continue
-        if position and v.position != position.upper():
-            continue
+        if position:
+            pos_filter = position.upper()
+            if pos_filter == "FLEX":
+                if v.position not in config.FLEX_ELIGIBLE:
+                    continue
+            elif v.position != pos_filter:
+                continue
         is_starred = v.name.lower() in starred_lower
         if starred_only and not is_starred:
             continue

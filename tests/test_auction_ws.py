@@ -307,6 +307,15 @@ def test_nomination_board_position_filter():
     assert {r.name for r in rows} == {"Bijan Robinson", "Kenneth Walker III"}
 
 
+def test_nomination_board_position_filter_flex_matches_rb_wr_te():
+    board = BIG_BOARD + [_board_val("Travis Kelce", "TE", 25, 3, bye=9)]
+    state = _board_state()
+    rows = auction.nomination_board(board, state, inflation=1.0, position="flex")
+    assert {r.name for r in rows} == {
+        "Bijan Robinson", "Kenneth Walker III", "Justin Jefferson", "Travis Kelce",
+    }
+
+
 def test_nomination_board_starred_only():
     state = _board_state()
     rows = auction.nomination_board(

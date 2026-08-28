@@ -694,10 +694,17 @@ class TextualWsApp(App):
                     f"[yellow]Tier {match.tier} {match.position} -- last one. "
                     f"Next tier: {equivalent.name} (${equivalent.value})[/yellow]")
 
-            verdict = auction.bid_verdict(pointer.high_bid, self._adjusted(match))
-            self.status.verdict_line = (
-                f"Verdict: [{verdict.style}]{verdict.label}[/{verdict.style}] "
-                f"at ${pointer.high_bid}")
+            adjusted = self._adjusted(match)
+            verdict = auction.bid_verdict(pointer.high_bid, adjusted)
+            if adjusted is None:
+                self.status.verdict_line = (
+                    f"Verdict: [{verdict.style}]{verdict.label}[/{verdict.style}]")
+            else:
+                diff = pointer.high_bid - adjusted
+                sign = "+" if diff >= 0 else "-"
+                self.status.verdict_line = (
+                    f"Verdict: [{verdict.style}]{verdict.label}[/{verdict.style}] "
+                    f"by {sign}${abs(diff)} at ${pointer.high_bid}")
 
             if auction.qb_bye_would_clash(self.state, self.state.my_team, self.vals, match):
                 self.status.bye_line = (

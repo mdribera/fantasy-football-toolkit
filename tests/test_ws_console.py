@@ -454,6 +454,32 @@ async def test_status_verdict_reflects_the_current_high(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_status_verdict_shows_the_dollar_diff(tmp_path):
+    """T28: the verdict line names the gap between the bid and Adjusted, not
+    just a label -- "pricey" alone doesn't say by how much."""
+    app, ws, state = make_app(tmp_path)
+    _stub_closed_league(state, app.vals)
+    async with app.run_test() as pilot:
+        ws.feed(draft_ws.Bid(4, 3915511, 70, 25000, 12731))  # sheet $43, adjusted $43
+        await app._poll()
+        await pilot.pause()
+        assert "overpaying" in app.status.verdict_line
+        assert "by +$27 at $70" in app.status.verdict_line
+
+
+@pytest.mark.asyncio
+async def test_status_verdict_diff_is_negative_for_a_good_value_read(tmp_path):
+    app, ws, state = make_app(tmp_path)
+    _stub_closed_league(state, app.vals)
+    async with app.run_test() as pilot:
+        ws.feed(draft_ws.Bid(4, 3915511, 30, 25000, 12731))  # sheet $43, adjusted $43
+        await app._poll()
+        await pilot.pause()
+        assert "good value" in app.status.verdict_line
+        assert "by -$13 at $30" in app.status.verdict_line
+
+
+@pytest.mark.asyncio
 async def test_status_shows_no_read_when_forward_inflation_is_none(tmp_path):
     """T36a: the endgame money-dump case -- zero sheet-value surplus left
     but real cash still in the room. Adjusted/Edge must render as '-'
@@ -471,6 +497,9 @@ async def test_status_shows_no_read_when_forward_inflation_is_none(tmp_path):
         assert "Adjusted -" in rendered
         assert "Edge -" in rendered
         assert "no read" in app.status.verdict_line
+        # T28: no adjusted value means no diff to report and nothing to
+        # measure the bid against, so the line stops at the label.
+        assert app.status.verdict_line == "Verdict: [dim]no read[/dim]"
 
 
 @pytest.mark.asyncio
@@ -1040,6 +1069,19 @@ async def test_pos_command_filters_by_position(tmp_path):
         assert [r.name for r in app._board_rows] == ["Justin Jefferson"]
         app._run_command("pos all")
         await pilot.pause()
+        assert len(app._board_rows) == 4
+
+
+@pytest.mark.asyncio
+async def test_pos_command_flex_matches_rb_wr_te(tmp_path):
+    """T30: `:pos flex` matches config.FLEX_ELIGIBLE (RB/WR/TE) rather than
+    an exact position code -- FLEX itself is never a Valuation.position
+    value, so the QBs in QB_FIXTURE_ROWS must drop out of the board."""
+    app, _, _ = make_app(tmp_path, rows=QB_FIXTURE_ROWS)
+    async with app.run_test() as pilot:
+        app._run_command("pos flex")
+        await pilot.pause()
+        assert {r.valuation.position for r in app._board_rows} == {"RB", "WR"}
         assert len(app._board_rows) == 4
 
 
