@@ -12,7 +12,7 @@ Every public auction value sheet is built for a 1QB league, and using one here
 is actively misleading.
 
 The league spends exactly $2,000 no matter the format. A 1QB league puts about
-6% of that into quarterbacks; this one puts **29%**. That extra ~$450 does not
+6% of that into quarterbacks; this one puts **17%**. That extra ~$230 does not
 appear from nowhere -- it comes straight out of the running back and receiver
 markets. So a downloaded chart overprices skill players and underprices the QB
 squeeze, and both errors compound.
@@ -49,9 +49,9 @@ Against live ESPN projections:
 
 - **QB2 through QB15 span 2.4 points per week.** Only Josh Allen (370 proj)
   separates from the field, and even he is worth just 3.8 pts/week over QB6.
-- Consequently **Lamar Jackson + Patrick Mahomes (614 pts, $53) beats Josh
-  Allen + a $12 QB2 (609 pts, $52)**. The elite-QB play is dominated.
-- Tight end is a punt: every TE in the league prices at $79 combined.
+- Consequently **Lamar Jackson + Patrick Mahomes (614 pts, $39) beats Josh
+  Allen + a $3 QB2 (609 pts, $38)**. The elite-QB play is dominated.
+- Tight end is a punt: every TE in the league prices at $99 combined.
 - Kickers and defenses are $1, last, always.
 
 ## Credentials
