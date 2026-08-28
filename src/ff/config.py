@@ -80,13 +80,16 @@ class ReplacementLevel:
 
     Value above this baseline is what teams actually bid on. The QB number is
     the whole story of this league: 10 teams x 2 starters = 20 QBs started every
-    week, and rosters carry a third for byes, so most of the ~32 startable NFL
-    quarterbacks are gone. Replacement QB is therefore a genuine backup, not
-    the solid QB12-ish starter a 1QB league falls back on. QB26, not QB30,
-    is what the room actually pays for: three years of this league's own
-    auctions (2023-2025) price QB spend at 17-20% of the budget, matching
-    QB26's predicted 17.8% share, with 25-27 quarterbacks drafted and 4-6
-    teams stopping at two every year. See docs/notes/auction-room-history.md.
+    week, and a roster plan that carries a third for byes would account for
+    roughly 30 of the ~32 startable NFL quarterbacks. Replacement QB is
+    therefore a genuine backup, not the solid QB12-ish starter a 1QB league
+    falls back on.
+
+    What that roster plan implies is not what the room actually clears. QB26,
+    not QB30, is what it pays for: three years of this league's own auctions
+    (2023-2025) price QB spend at 17-20% of the budget, matching QB26's
+    predicted 17.8% share, with 25-27 quarterbacks drafted and 4-6 teams
+    stopping at two every year. See docs/notes/auction-room-history.md.
     """
 
     QB: int = 26      # three-year room evidence: effective replacement QB25-27

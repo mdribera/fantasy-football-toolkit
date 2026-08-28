@@ -169,3 +169,10 @@ def test_position_projections_caches_to_disk(monkeypatch, tmp_path):
     assert second == QB_FIXTURE
     assert len(calls) == 1   # second call served from cache, no re-fetch
     assert (tmp_path / "sleeper_projections_2026_QB.json").exists()
+
+    url, params = calls[0]
+    assert url.endswith("/2026")
+    # "position[]" is Sleeper's actual key; a plain "position" silently
+    # returns every position instead of the one asked for.
+    assert params["position[]"] == "QB"
+    assert params["season_type"] == "regular"

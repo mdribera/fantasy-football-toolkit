@@ -56,7 +56,7 @@ def top_by_position(priced: list[values.Valuation], position: str, limit: int
 
 def render_board_by_baseline(title: str, rows_by_baseline: dict[int, list[values.Valuation]]
                              ) -> Table:
-    """One row per player named on the highest (current, QB30) baseline's
+    """One row per player named on the highest (QB30) baseline's
     board, with that player's price at every baseline side by side --
     the fastest way to see who moves and by how much."""
     table = Table(title=title)

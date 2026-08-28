@@ -26,7 +26,7 @@ def test_replacement_override_does_not_touch_the_live_config():
 def test_a_lower_qb_baseline_raises_qb_replacement_points():
     """Baseline QB10 sets replacement to the 10th-best QB's points, which is
     higher up the depth chart (and thus a higher point total) than the
-    default baseline's 30th-best -- raising the floor for everyone above it
+    QB30 baseline's 30th-best -- raising the floor for everyone above it
     and shrinking their VORP."""
     pool = [_player(f"QB{i}", "QB", 300 - i * 5) for i in range(40)]
     low_baseline = replace(config.REPLACEMENT, QB=10)
