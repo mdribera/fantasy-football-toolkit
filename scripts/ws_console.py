@@ -87,7 +87,10 @@ class Banner(Static):
 
 
 class StatusPanel(Static):
-    """What is happening right now, always on screen."""
+    """What is happening right now, always on screen: who's up, what the
+    market says about them, and whether you should bid. Combines what used
+    to be two separate panels -- the live bid state and the per-player
+    analysis are the same read, not two."""
 
     nominee = reactive("")
     high_bid = reactive(0)
@@ -95,35 +98,76 @@ class StatusPanel(Static):
     clock_s = reactive(0)
     sheet_value = reactive(0)
     adjusted_value = reactive(0)
+    espn_avg = reactive(None)
+    edge = reactive(0)
+    tier = reactive(0)
+    bye = reactive(None)
     max_bid_amount = reactive(0)
+    tier_line = reactive("")
+    verdict_line = reactive("")
+    bye_line = reactive("")
 
     def render(self) -> Text:
         if not self.nominee:
             return Text.from_markup("[dim]No active nomination.[/dim]")
         clock = f"{self.clock_s}s" if self.clock_s else "-"
         clock_style = "bold red" if 0 < self.clock_s <= 5 else "yellow"
-        return Text.from_markup(
-            f"[bold]{self.nominee}[/bold]   "
+        header = f"[bold]{self.nominee}[/bold]"
+        if self.tier:
+            header += f"  T{self.tier}"
+        if self.bye:
+            header += f"  bye {self.bye}"
+        espn_avg = f"${self.espn_avg:.0f}" if self.espn_avg is not None else "-"
+        edge_style = "green" if self.edge > 0 else "red" if self.edge < 0 else "dim"
+        lines = [
+            header,
             f"High: [bold]${self.high_bid}[/bold] ({self.high_bidder or '-'})   "
-            f"Clock: [{clock_style}]{clock}[/{clock_style}]\n"
+            f"Clock: [{clock_style}]{clock}[/{clock_style}]",
             f"Sheet ${self.sheet_value} · Adjusted ${self.adjusted_value} · "
-            f"Your max bid: ${self.max_bid_amount}"
-        )
+            f"ESPN {espn_avg} · Edge [{edge_style}]{self.edge:+d}[/{edge_style}] · "
+            f"max bid ${self.max_bid_amount}",
+        ]
+        lines += [line for line in (self.verdict_line, self.tier_line, self.bye_line) if line]
+        return Text.from_markup("\n".join(lines))
 
 
 class BidLog(RichLog):
     """One line per Bid event, scoped to the current nomination and cleared
-    when the pointer moves to a new player. Also carries the console's own
-    replies (sent, refused, cancelled) so there is one event stream to read."""
+    when the pointer moves to a new player, plus the console's own bid
+    replies (sent, refused, cancelled) -- what the auction itself is doing.
+    Typed `:` command replies go to OutputLog instead, so a table you asked
+    for doesn't scroll away behind the next live bid."""
+
+    can_focus = False
+
+
+class OutputLog(RichLog):
+    """Replies to typed `:` commands -- the :me/:teams/:market/:best/:need
+    tables and the board's search/filter/sort status lines -- kept off the
+    bid log so a result you asked for survives the next bid or sale."""
+
+    can_focus = False
+
+
+class TeamList(DataTable):
+    """Every team in the league, selectable -- highlighting a row points
+    RosterPanel and RosterTable at that team instead of always showing ours.
+    Rebuilt on the same cadence as NominationTable, and for the same reason:
+    the Left column has to stay live as budgets move."""
+
+    def on_mount(self) -> None:
+        self.cursor_type = "row"
+        self.add_columns("Team", "Left")
 
 
 class RosterPanel(Static):
-    """Budget and starting-slot summary -- two logical lines, which may wrap
-    within the panel's width as the slot hints grow, but never grow in
-    *count*. The player list lives in the sibling RosterTable instead: an
-    ever-growing list of names is exactly the shape of content a plain
-    Static's "auto" height doesn't reliably keep up with once it's already
-    mounted, which is what clipped the roster panel before (see T20)."""
+    """Budget and starting-slot summary for whichever team is selected in
+    TeamList -- two logical lines, which may wrap within the panel's width
+    as the slot hints grow, but never grow in *count*. The player list lives
+    in the sibling RosterTable instead: an ever-growing list of names is
+    exactly the shape of content a plain Static's "auto" height doesn't
+    reliably keep up with once it's already mounted, which is what clipped
+    the roster panel before (see T20)."""
 
     budget_left = reactive(config.SALARY_CAP)
     spots_left = reactive(config.ROSTER_SIZE)
@@ -159,27 +203,16 @@ class RosterPanel(Static):
 
 
 class RosterTable(DataTable):
-    """Your own drafted players, one row each -- a DataTable so the list
-    scrolls and virtualizes like NominationTable instead of a Static's fixed
-    "auto" height silently clipping it once the roster grows."""
+    """The selected team's drafted players, one row each -- a DataTable so
+    the list scrolls and virtualizes like NominationTable instead of a
+    Static's fixed "auto" height silently clipping it once the roster
+    grows."""
+
+    can_focus = False
 
     def on_mount(self) -> None:
         self.cursor_type = "none"
         self.add_columns("Player", "Pos", "Paid")
-
-
-class AnalysisPanel(Static):
-    tier_line = reactive("")
-    market_line = reactive("")
-    verdict_line = reactive("")
-    bye_line = reactive("")
-    best_line = reactive("")
-
-    def render(self) -> Text:
-        rows = [self.tier_line, self.market_line, self.verdict_line,
-                self.bye_line, self.best_line]
-        body = "\n".join(r for r in rows if r)
-        return Text.from_markup(body or "[dim]Nothing nominated.[/dim]")
 
 
 class NominationTable(DataTable):
@@ -267,42 +300,49 @@ class TextualWsApp(App):
         self._board_position: str | None = None
         self._board_starred_only = False
         self._board_sort = "rank"
+        self.selected_team = state.my_team
+        self._team_rows: list[str] = []
 
     def compose(self) -> ComposeResult:
         yield Banner(id="banner")
         yield StatusPanel(id="status")
         with Horizontal(id="middle"):
-            yield BidLog(id="bidlog", markup=True, min_width=30, wrap=True)
-            with Vertical(id="roster"):
-                yield RosterPanel(id="roster-header")
-                yield RosterTable(id="roster-table")
-        yield AnalysisPanel(id="analysis")
+            with Vertical(id="feed"):
+                yield BidLog(id="bidlog", markup=True, min_width=30, wrap=True)
+                yield OutputLog(id="output", markup=True, min_width=30, wrap=True)
+            with Horizontal(id="roster"):
+                yield TeamList(id="team-list")
+                with Vertical(id="roster-pane"):
+                    yield RosterPanel(id="roster-header")
+                    yield RosterTable(id="roster-table")
         yield NominationTable(id="nominations")
         yield Input(id="command", placeholder="/name | pos QB | sort rec | star | "
-                    "b 45 | undo | market | teams | best RB | need | me | quit")
+                    "b 45 | team 4 | undo | market | teams | best RB | need | me | quit")
         yield Footer()
 
     async def on_mount(self) -> None:
         self.banner = self.query_one("#banner", Banner)
         self.status = self.query_one("#status", StatusPanel)
         self.bidlog = self.query_one("#bidlog", BidLog)
+        self.output = self.query_one("#output", OutputLog)
+        self.team_list = self.query_one("#team-list", TeamList)
+        self.roster_box = self.query_one("#roster", Horizontal)
         self.roster = self.query_one("#roster-header", RosterPanel)
         self.roster_table = self.query_one("#roster-table", RosterTable)
-        self.analysis = self.query_one("#analysis", AnalysisPanel)
         self.nominations = self.query_one("#nominations", NominationTable)
         self.command = self.query_one("#command", Input)
 
         self.bidlog.border_title = "Bid log (this nomination)"
-        self.query_one("#roster", Vertical).border_title = "Your roster"
-        self.analysis.border_title = (
-            "Analysis -- Market: per-position forward-looking price read; "
-            "Best remaining: top players left, scoped to the position shown")
+        self.output.border_title = "Output (:me :teams :market :best :need)"
+        self._update_roster_title()
         self.nominations.border_title = (
             "Board (up/down, n to nominate, space to star, / to search) -- "
             "star / name / pos / tier / bye / sheet / adjusted / espn avg / edge")
         self.status.border_title = (
-            "STATUS -- Sheet: your model's price; Adjusted: Sheet adjusted "
-            "for how the room is actually paying")
+            "NOW -- Sheet: your model's price; Adjusted: Sheet adjusted for "
+            "how the room is actually paying; ESPN: ESPN's own average "
+            "auction value (1QB format, a market anchor not a price); Edge: "
+            "Sheet minus Adjusted, positive is a bargain")
 
         self._reload_board()
         self._refresh_panels()
@@ -497,6 +537,10 @@ class TextualWsApp(App):
         self.status.high_bidder = self._high_bidder_label()
         self.status.sheet_value = match.value if match else 0
         self.status.adjusted_value = self._adjusted(match)
+        self.status.espn_avg = match.espn_avg if match else None
+        self.status.edge = (match.value - self.status.adjusted_value) if match else 0
+        self.status.tier = match.tier if match else 0
+        self.status.bye = match.bye if match else None
         self.status.max_bid_amount = self.state.max_bid(self.state.my_team)
 
     def _high_bidder_label(self) -> str:
@@ -525,53 +569,98 @@ class TextualWsApp(App):
     def _flash(self, message: str) -> None:
         self.bidlog.write(message)
 
+    def _output(self, renderable, *, clear: bool = True) -> None:
+        """Write a `:` command's reply to OutputLog -- clearing first by
+        default, since a fresh :me/:teams/:market table replaces rather than
+        piles onto whatever was there before. A caller writing several
+        related lines (a table plus its footer, :need's per-position tables)
+        passes clear=False on every write after the first."""
+        if clear:
+            self.output.clear()
+        self.output.write(renderable)
+
     def _refresh_panels(self) -> None:
+        self._refresh_teams()
         self._refresh_roster()
         self._refresh_analysis()
 
+    def _update_roster_title(self) -> None:
+        self.roster_box.border_title = f"{self.selected_team} -- tab to focus, up/down to select"
+
+    def _refresh_teams(self) -> None:
+        """Rebuild the team list every refresh, same convention _reload_board
+        uses for the nomination board, so the Left column stays live without
+        losing whichever team is highlighted."""
+        teams = self.state.all_teams()
+        previous = self.selected_team
+        self.team_list.clear()
+        for team in teams:
+            label = Text(team, style="bold" if team == self.state.my_team else "")
+            self.team_list.add_row(label, f"${self.state.budget_left(team)}")
+        self._team_rows = teams
+        if not teams:
+            return
+        if previous in teams:
+            self.team_list.move_cursor(row=teams.index(previous))
+        else:
+            self.selected_team = teams[0]
+            self.team_list.move_cursor(row=0)
+            self._update_roster_title()
+
+    def on_data_table_row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        if event.data_table is not self.team_list:
+            return
+        if not self._team_rows or event.cursor_row >= len(self._team_rows):
+            return
+        team = self._team_rows[event.cursor_row]
+        if team == self.selected_team:
+            return
+        self.selected_team = team
+        self._update_roster_title()
+        self._refresh_roster()
+
+    def _select_team(self, arg: str | None) -> None:
+        teams = self.state.all_teams()
+        if arg is None:
+            target = self.state.my_team
+        elif arg.isdigit() and int(arg) in config.TEAMS:
+            target = config.TEAMS[int(arg)]
+        else:
+            target = next((t for t in teams if t.lower() == arg.lower()), arg.upper())
+        if target not in teams:
+            self._output(f"[yellow]Unknown team: {arg}[/yellow]", clear=False)
+            return
+        self.selected_team = target
+        if target in self._team_rows:
+            self.team_list.move_cursor(row=self._team_rows.index(target))
+        self._update_roster_title()
+        self._refresh_roster()
+        self._output(f"Now viewing {target}.", clear=False)
+
     def _refresh_roster(self) -> None:
-        me = self.state.my_team
-        counts = self.state.position_counts(me)
-        self.roster.budget_left = self.state.budget_left(me)
-        self.roster.spots_left = self.state.spots_left(me)
-        self.roster.max_bid_amount = self.state.max_bid(me)
+        team = self.selected_team
+        counts = self.state.position_counts(team)
+        self.roster.budget_left = self.state.budget_left(team)
+        self.roster.spots_left = self.state.spots_left(team)
+        self.roster.max_bid_amount = self.state.max_bid(team)
         targets = config.ROSTER_TARGETS
         self.roster.slots = tuple(
             (pos, counts.get(pos, 0), required, targets.get(pos, required))
             for pos, required in config.STARTERS.items()
             if pos != "FLEX"
         )
-        self.roster.bye_clash = auction.rostered_qb_bye_clash(self.state, me, self.vals)
+        self.roster.bye_clash = auction.rostered_qb_bye_clash(self.state, team, self.vals)
         self.roster_table.clear()
         for p in self.state.purchases:
-            if p.team == me:
+            if p.team == team:
                 self.roster_table.add_row(p.player, p.position, f"${p.price}")
-
-    def _neediest_position(self) -> str | None:
-        """First unfilled starting slot in STARTERS order, which is the order
-        'need' already iterates. Deterministic, and good enough: the panel is
-        a pointer at where your dollars have to go, not a ranking. Falls
-        through to an unfilled bench target (config.ROSTER_TARGETS) once every
-        starting slot is covered -- otherwise a team sitting at two
-        quarterbacks reads as needing nothing, when the third for byes is the
-        most important target left."""
-        me = self.state.my_team
-        for pos, count in self.state.needs(me).items():
-            if count > 0:
-                return pos
-        for pos, count in self.state.targets(me).items():
-            if count > 0:
-                return pos
-        return None
 
     def _refresh_analysis(self) -> None:
         pointer = self.ws.pointer
         if pointer.player_id is None:
-            self.analysis.tier_line = ""
-            self.analysis.market_line = ""
-            self.analysis.verdict_line = ""
-            self.analysis.bye_line = ""
-            self.analysis.best_line = ""
+            self.status.tier_line = ""
+            self.status.verdict_line = ""
+            self.status.bye_line = ""
             return
 
         name, _ = self.resolver.resolve(pointer.player_id)
@@ -582,54 +671,33 @@ class TextualWsApp(App):
             equivalent = auction.next_equivalent(
                 self.vals, taken, match.position, match.tier, match.name)
             if equivalent is None:
-                self.analysis.tier_line = (
+                self.status.tier_line = (
                     f"[bold red]Tier {match.tier} {match.position} -- nothing "
                     f"equivalent left.[/bold red]")
             elif equivalent.tier == match.tier:
-                self.analysis.tier_line = (
+                self.status.tier_line = (
                     f"Tier {match.tier} {match.position} -- next: "
                     f"{equivalent.name} (${equivalent.value})")
             else:
-                self.analysis.tier_line = (
+                self.status.tier_line = (
                     f"[yellow]Tier {match.tier} {match.position} -- last one. "
                     f"Next tier: {equivalent.name} (${equivalent.value})[/yellow]")
 
-            by_position = self.state.forward_inflation_by_position(self.vals)
-            if match.position in by_position:
-                rate, scope = by_position[match.position], match.position
-            else:
-                rate, scope = self.state.forward_inflation(self.vals), "overall"
-            read = ("over sheet" if rate > 1.1 else
-                    "under sheet" if rate < 0.9 else "at sheet")
-            self.analysis.market_line = f"Market: {scope} projected x{rate:.2f} ({read})"
-
             verdict = auction.bid_verdict(pointer.high_bid, self._adjusted(match))
-            self.analysis.verdict_line = (
+            self.status.verdict_line = (
                 f"Verdict: [{verdict.style}]{verdict.label}[/{verdict.style}] "
                 f"at ${pointer.high_bid}")
 
             if auction.qb_bye_would_clash(self.state, self.state.my_team, self.vals, match):
-                self.analysis.bye_line = (
+                self.status.bye_line = (
                     f"[bold red]Bye clash: you already have a QB on week "
                     f"{match.bye}.[/bold red]")
             else:
-                self.analysis.bye_line = ""
+                self.status.bye_line = ""
         else:
-            self.analysis.tier_line = f"[dim]{name} is not on your board.[/dim]"
-            self.analysis.market_line = ""
-            self.analysis.verdict_line = ""
-            self.analysis.bye_line = ""
-
-        need = self._neediest_position()
-        pool = sorted(
-            (v for v in self.vals
-             if v.name not in taken and (need is None or v.position == need)),
-            key=lambda v: v.value, reverse=True)[:3]
-        label = f"neediest -- {need}" if need else "all starters filled"
-        self.analysis.best_line = (
-            f"Best remaining ({label}): "
-            + (", ".join(f"{v.name} {v.position} ${v.value}" for v in pool) or "none")
-        )
+            self.status.tier_line = f"[dim]{name} is not on your board.[/dim]"
+            self.status.verdict_line = ""
+            self.status.bye_line = ""
 
     def action_shutdown(self) -> None:
         self.exit()
@@ -854,11 +922,12 @@ class TextualWsApp(App):
         """The same verbs the REPL dispatches, for everything not worth a
         hotkey, plus the board's own search/filter/sort verbs. Tables come
         from auction.py's builders so both consoles show exactly the same
-        numbers."""
+        numbers. Anything typed here replies into OutputLog; only what the
+        auction itself does (a sent bid, a live sale) goes to the bid log."""
         if line.startswith("/"):
             self._board_query = line[1:].strip() or None
             self._reload_board()
-            self._flash(f"Search: {self._board_query or '(cleared)'}")
+            self._output(f"Search: {self._board_query or '(cleared)'}", clear=False)
             return
 
         cmd = line.split()
@@ -869,61 +938,66 @@ class TextualWsApp(App):
         elif head == "search":
             self._board_query = " ".join(cmd[1:]).strip() or None
             self._reload_board()
-            self._flash(f"Search: {self._board_query or '(cleared)'}")
+            self._output(f"Search: {self._board_query or '(cleared)'}", clear=False)
         elif head == "pos":
             arg = cmd[1].upper() if len(cmd) > 1 else "ALL"
             self._board_position = None if arg == "ALL" else arg
             self._reload_board()
-            self._flash(f"Position filter: {self._board_position or 'all'}")
+            self._output(f"Position filter: {self._board_position or 'all'}", clear=False)
         elif head == "sort":
             key = cmd[1].lower() if len(cmd) > 1 else "rank"
             if key not in auction.NOMINATION_BOARD_SORTS:
-                self._flash(f"[yellow]Unknown sort key. Use one of: "
-                            f"{', '.join(auction.NOMINATION_BOARD_SORTS)}[/yellow]")
+                self._output(f"[yellow]Unknown sort key. Use one of: "
+                            f"{', '.join(auction.NOMINATION_BOARD_SORTS)}[/yellow]", clear=False)
             else:
                 self._board_sort = key
                 self._reload_board()
-                self._flash(f"Sorted by {key}.")
+                self._output(f"Sorted by {key}.", clear=False)
         elif head == "star":
             arg = cmd[1].lower() if len(cmd) > 1 else "only"
             self._board_starred_only = (arg != "all")
             self._reload_board()
-            self._flash("Showing starred only." if self._board_starred_only
-                        else "Showing the full board.")
+            self._output("Showing starred only." if self._board_starred_only
+                        else "Showing the full board.", clear=False)
         elif head == "clear":
             self._board_query = None
             self._board_position = None
             self._board_starred_only = False
             self._reload_board()
-            self._flash("Filters cleared.")
+            self._output("Filters cleared.", clear=False)
         elif head == "b":
             self._start_bid(cmd[1:])
+        elif head == "team":
+            self._select_team(cmd[1] if len(cmd) > 1 else None)
         elif head == "me":
             table, footer = auction.me_table(self.state, self.vals)
-            self.bidlog.write(table)
-            self._flash(footer)
+            self._output(table)
+            self._output(footer, clear=False)
         elif head == "teams":
-            self.bidlog.write(auction.teams_table(self.state))
+            self._output(auction.teams_table(self.state))
         elif head == "market":
-            self.bidlog.write(auction.market_table(self.state, self.vals))
-            self._flash(f"Other teams still hold [bold]"
-                        f"${self.state.dollars_remaining_in_room()}[/bold] combined.")
+            self._output(auction.market_table(self.state, self.vals))
+            self._output(f"Other teams still hold [bold]"
+                        f"${self.state.dollars_remaining_in_room()}[/bold] combined.",
+                        clear=False)
         elif head == "need":
+            first = True
             for pos, count in self.state.needs(self.state.my_team).items():
                 if count > 0:
-                    self.bidlog.write(auction.best_table(self.state, self.vals, pos, 6))
+                    self._output(auction.best_table(self.state, self.vals, pos, 6), clear=first)
+                    first = False
         elif head == "best":
             pos = cmd[1] if len(cmd) > 1 and not cmd[1].isdigit() else None
             limit = next((int(c) for c in cmd[1:] if c.isdigit()), 15)
-            self.bidlog.write(auction.best_table(self.state, self.vals, pos, limit))
+            self._output(auction.best_table(self.state, self.vals, pos, limit))
         elif head == "undo":
             removed = self.state.undo()
-            self._flash(f"Removed: {removed}" if removed else "Nothing to undo.")
+            self._output(f"Removed: {removed}" if removed else "Nothing to undo.", clear=False)
             self._refresh_panels()
             self._reload_board()
         else:
-            self._flash("[yellow]Unrecognized.[/yellow] Use: /name, pos, sort, star, "
-                        "clear, b/undo/market/teams/best/need/me/quit")
+            self._output("[yellow]Unrecognized.[/yellow] Use: /name, pos, sort, star, "
+                        "clear, team, b/undo/market/teams/best/need/me/quit", clear=False)
 
 
 def run_ws_console(ws, state: draft_state.DraftState,

@@ -142,9 +142,9 @@ def make_app(tmp_path, nomination_list=("Justin Jefferson", "Kenneth Walker III"
 
 @pytest.mark.asyncio
 async def test_nominations_has_a_minimum_height_floor(tmp_path):
-    """At a standard 80x24 terminal the fixed heights of #status, #middle
-    and #analysis alone sum to 25 rows, leaving 1fr no room -- the nomination
-    list that `n` acts on must stay visible regardless of terminal size."""
+    """At a standard 80x24 terminal the fixed heights of #status and #middle
+    alone sum to 23 rows, leaving 1fr no room -- the nomination list that
+    `n` acts on must stay visible regardless of terminal size."""
     app, _, _ = make_app(tmp_path)
     async with app.run_test() as pilot:
         min_height = app.nominations.styles.min_height
@@ -158,9 +158,10 @@ async def test_app_mounts_every_panel(tmp_path):
     async with app.run_test():
         assert app.query_one("#status", ws_console.StatusPanel)
         assert app.query_one("#bidlog", ws_console.BidLog)
+        assert app.query_one("#output", ws_console.OutputLog)
+        assert app.query_one("#team-list", ws_console.TeamList)
         assert app.query_one("#roster-header", ws_console.RosterPanel)
         assert app.query_one("#roster-table", ws_console.RosterTable)
-        assert app.query_one("#analysis", ws_console.AnalysisPanel)
         assert app.query_one("#nominations", ws_console.NominationTable) is not None
 
 
@@ -422,73 +423,64 @@ async def test_roster_table_keeps_every_player_as_the_roster_grows(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_analysis_names_the_next_equivalent_in_tier(tmp_path):
+async def test_status_names_the_next_equivalent_in_tier(tmp_path):
     app, ws, _ = make_app(tmp_path)
     async with app.run_test() as pilot:
         ws.feed(draft_ws.Bid(4, 3915511, 54, 25000, 12731))
         await app._poll()
         await pilot.pause()
-        assert "Tier 2 RB" in app.analysis.tier_line
-        assert "Kenneth Walker III" in app.analysis.tier_line
+        assert "Tier 2 RB" in app.status.tier_line
+        assert "Kenneth Walker III" in app.status.tier_line
 
 
 @pytest.mark.asyncio
-async def test_analysis_verdict_reflects_the_current_high(tmp_path):
+async def test_status_verdict_reflects_the_current_high(tmp_path):
     app, ws, state = make_app(tmp_path)
     _stub_closed_league(state, app.vals)
     async with app.run_test() as pilot:
         ws.feed(draft_ws.Bid(4, 3915511, 70, 25000, 12731))  # sheet $43
         await app._poll()
         await pilot.pause()
-        assert "overpaying" in app.analysis.verdict_line
+        assert "overpaying" in app.status.verdict_line
 
 
 @pytest.mark.asyncio
-async def test_analysis_market_line_is_forward_looking_and_tilted(tmp_path):
-    """Regression for T6: the market line must read the same forward,
-    per-position number that drives the verdict right below it, not the
-    backward-looking "what's already sold" rate -- otherwise the two lines
-    can tell contradictory stories about the same nomination."""
+async def test_status_shows_espn_average_and_edge(tmp_path):
+    """T23: ESPN average and Edge are already on the nomination board for
+    every other player -- the one player money is actually moving on must
+    not be missing them."""
     app, ws, state = make_app(tmp_path)
     _stub_closed_league(state, app.vals)
-    state.record("Tony Pollard", "RB", 30, "RIVAL")  # sheet $22 -- an RB overpay
     async with app.run_test() as pilot:
         ws.feed(draft_ws.Bid(4, 3915511, 44, 25000, 12731))   # Bijan Robinson, RB
         await app._poll()
         await pilot.pause()
-        assert "projected" in app.analysis.market_line
-        assert "RB" in app.analysis.market_line
-        expected = state.forward_inflation_by_position(app.vals)["RB"]
-        assert f"x{expected:.2f}" in app.analysis.market_line
+        assert app.status.tier == 2
+        assert app.status.bye is None   # FIXTURE_ROWS carries no bye weeks
+        assert app.status.espn_avg is None   # FIXTURE_ROWS carries no espn_avg
+        assert app.status.edge == app.status.sheet_value - app.status.adjusted_value
 
 
 @pytest.mark.asyncio
-async def test_analysis_best_remaining_targets_the_neediest_position(tmp_path):
-    app, ws, state = make_app(tmp_path)
+async def test_status_espn_average_and_edge_match_the_board_row(tmp_path):
+    """The merged panel's Edge must agree with the same player's row on the
+    nomination board -- they're computed from the same adjusted price, and
+    must never be able to tell a bidder two different stories."""
+    rows = [dict(row) for row in FIXTURE_ROWS]
+    rows[0]["espn_avg"] = 39.0   # Bijan Robinson
+    rows[0]["bye"] = 11
+    app, ws, state = make_app(tmp_path, rows=rows)
+    _stub_closed_league(state, app.vals)
     async with app.run_test() as pilot:
-        ws.feed(draft_ws.Bid(4, 3915511, 44, 25000, 12731))
+        ws.feed(draft_ws.Bid(4, 3915511, 44, 25000, 12731))   # Bijan Robinson, RB
         await app._poll()
         await pilot.pause()
-        # QB is the first unfilled slot in STARTERS order and the board has none.
-        assert app._neediest_position() == "QB"
-        assert "QB" in app.analysis.best_line
-
-
-@pytest.mark.asyncio
-async def test_neediest_position_falls_through_to_the_third_qb(tmp_path):
-    """T8: needs() alone reports "all starting slots filled" at two
-    quarterbacks -- the console has to keep pointing at the third QB (for
-    byes) once starters are covered, since the in-season waiver wire is
-    empty and that third QB has to come from the auction."""
-    app, ws, state = make_app(tmp_path)
-    state.record("Josh Allen", "QB", 60, "ME")
-    state.record("Lamar Jackson", "QB", 40, "ME")
-    for pos in ("RB", "RB", "WR", "WR", "TE", "D/ST", "K"):
-        state.record(f"Filler {pos} {state.roster_count('ME')}", pos, 1, "ME")
-    async with app.run_test() as pilot:
+        app._reload_board()
         await pilot.pause()
-        assert all(count == 0 for count in state.needs("ME").values())  # starters covered
-        assert app._neediest_position() == "QB"    # but the target isn't
+        board_row = next(r for r in app._board_rows if r.name == "Bijan Robinson")
+        assert app.status.espn_avg == 39.0
+        assert app.status.bye == 11
+        assert app.status.edge == board_row.edge
 
 
 @pytest.mark.asyncio
@@ -520,7 +512,7 @@ async def test_roster_header_flags_a_qb_bye_clash(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_analysis_flags_a_qb_bye_clash_on_the_nominated_player(tmp_path):
+async def test_status_flags_a_qb_bye_clash_on_the_nominated_player(tmp_path):
     """T8: nominating a QB who'd share a bye with one already on the roster
     has to be visible before the bid goes in, not discovered afterward."""
     app, ws, state = make_app(tmp_path, rows=QB_FIXTURE_ROWS)
@@ -529,24 +521,93 @@ async def test_analysis_flags_a_qb_bye_clash_on_the_nominated_player(tmp_path):
         ws.feed(draft_ws.Bid(4, 3916387, 30, 25000, 12731))   # Lamar Jackson, also bye 7
         await app._poll()
         await pilot.pause()
-        assert "Bye clash" in app.analysis.bye_line
-        assert "week 7" in app.analysis.bye_line
+        assert "Bye clash" in app.status.bye_line
+        assert "week 7" in app.status.bye_line
 
         ws.feed(draft_ws.Sold(4, 3916387, 1, 30, 0))
         ws.feed(draft_ws.Bid(4, 4426348, 30, 25000, 12731))   # Jayden Daniels, bye 12
         await app._poll()
         await pilot.pause()
-        assert app.analysis.bye_line == ""
+        assert app.status.bye_line == ""
 
 
 @pytest.mark.asyncio
-async def test_analysis_falls_back_to_overall_inflation(tmp_path):
+async def test_selecting_another_team_repoints_the_roster(tmp_path):
+    """T23: the roster block has to be able to show any of the ten teams,
+    not just ours -- DraftState already tracks every team's purchases and
+    budget, so highlighting a row in TeamList is the only thing that has to
+    change."""
+    app, ws, state = make_app(tmp_path)
+    state.record("Justin Jefferson", "WR", 52, "ME")
+    state.record("Bijan Robinson", "RB", 43, "CCT")
+    async with app.run_test() as pilot:
+        app._refresh_panels()
+        await pilot.pause()
+        assert "CCT" in app._team_rows
+        app.team_list.move_cursor(row=app._team_rows.index("CCT"))
+        await pilot.pause()
+        assert app.selected_team == "CCT"
+        assert ("Bijan Robinson", "RB", "$43") in _roster_rows(app)
+        assert app.roster.budget_left == state.budget_left("CCT")
+
+
+@pytest.mark.asyncio
+async def test_team_command_selects_and_snaps_back(tmp_path):
+    app, ws, state = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        app._run_command("team CCT")
+        await pilot.pause()
+        assert app.selected_team == "CCT"
+        app._run_command("team")   # no argument snaps back to our own team
+        await pilot.pause()
+        assert app.selected_team == "ME"
+
+
+@pytest.mark.asyncio
+async def test_team_list_cursor_survives_a_refresh_tick(tmp_path):
+    """_refresh_teams rebuilds the team list's rows every tick to keep the
+    Left column live -- it must re-find the highlighted team afterward
+    rather than resetting the cursor out from under Mark."""
+    app, ws, state = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        app._run_command("team CCT")
+        await pilot.pause()
+        app._refresh_panels()
+        await pilot.pause()
+        assert app.selected_team == "CCT"
+        assert app.team_list.cursor_row == app._team_rows.index("CCT")
+
+
+@pytest.mark.asyncio
+async def test_status_guardrails_stay_on_my_team_while_scouting_another(tmp_path):
+    """Max bid and the pre-bid bye-clash warning in the merged status panel
+    are guardrails about MY roster -- they must not follow the roster
+    panel's selection over to whichever team is being scouted."""
+    app, ws, state = make_app(tmp_path, rows=QB_FIXTURE_ROWS)
+    state.record("Josh Allen", "QB", 60, "ME")   # bye week 7
+    async with app.run_test() as pilot:
+        app._run_command("team CCT")
+        await pilot.pause()
+        ws.feed(draft_ws.Bid(4, 3916387, 30, 25000, 12731))   # Lamar Jackson, also bye 7
+        await app._poll()
+        await pilot.pause()
+        assert "Bye clash" in app.status.bye_line
+        assert app.status.max_bid_amount == state.max_bid("ME")
+
+
+@pytest.mark.asyncio
+async def test_typed_command_output_does_not_disturb_the_bid_log(tmp_path):
     app, ws, _ = make_app(tmp_path)
     async with app.run_test() as pilot:
+        app._run_command("market")
+        await pilot.pause()
+        output_lines = len(app.output.lines)
+        assert output_lines > 0
         ws.feed(draft_ws.Bid(4, 3915511, 44, 25000, 12731))
         await app._poll()
         await pilot.pause()
-        assert "overall" in app.analysis.market_line
+        assert len(app.output.lines) == output_lines
+        assert len(app.bidlog.lines) > 0
 
 
 @pytest.mark.asyncio
@@ -752,7 +813,11 @@ async def test_drained_alerts_and_feed_errors_also_land_in_the_bid_log(tmp_path)
         ws.alerts.append("no frames received in 45s -- forcing reconnect")
         await app._poll()
         await pilot.pause()
-        assert any("forcing reconnect" in str(line) for line in app.bidlog.lines)
+        # Joined rather than checked line-by-line: BidLog's width narrowed
+        # when the roster block grew a team list, and this message now wraps
+        # across two rendered lines at 80 columns. No separator: a wrapped
+        # line's text already carries its own trailing space.
+        assert "forcing reconnect" in "".join(line.text for line in app.bidlog.lines)
 
 
 @pytest.mark.asyncio
@@ -896,12 +961,15 @@ async def test_command_undo_removes_the_last_purchase(tmp_path):
 
 @pytest.mark.asyncio
 async def test_command_market_and_teams_render_without_error(tmp_path):
+    """Each of these clears OutputLog and writes fresh, so only the last
+    command's table survives -- this is a "renders without raising" check,
+    not an accumulation check."""
     app, _, _ = make_app(tmp_path)
     async with app.run_test() as pilot:
         for line in ("market", "teams", "best RB", "need", "me"):
             app._run_command(line)
         await pilot.pause()
-        assert len(app.bidlog.lines) > 5
+        assert len(app.output.lines) > 0
 
 
 @pytest.mark.asyncio
@@ -964,7 +1032,7 @@ async def test_sort_command_rejects_an_unknown_key(tmp_path):
     async with app.run_test() as pilot:
         app._run_command("sort nonsense")
         await pilot.pause()
-        assert any("Unknown sort key" in str(line) for line in app.bidlog.lines)
+        assert any("Unknown sort key" in str(line) for line in app.output.lines)
 
 
 @pytest.mark.asyncio
@@ -1164,7 +1232,7 @@ async def test_sold_stays_quiet_for_a_genuine_matching_duplicate(tmp_path):
         await app._poll()
         await pilot.pause()
         assert not app.banner.display
-        assert any("already recorded by hand" in str(line) for line in app.bidlog.lines)
+        assert "already recorded by hand" in "".join(line.text for line in app.bidlog.lines)
 
 
 @pytest.mark.asyncio

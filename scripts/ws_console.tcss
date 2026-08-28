@@ -17,24 +17,41 @@ Screen.my-turn {
 }
 
 #status {
-    height: 4;
+    height: 8;
     border: round $primary;
     padding: 0 1;
 }
 
 #middle {
-    height: 12;
+    height: 15;
+}
+
+#feed {
+    width: 3fr;
 }
 
 #bidlog {
-    width: 2fr;
+    height: 1fr;
+    border: round $primary;
+}
+
+#output {
+    height: 1fr;
     border: round $primary;
 }
 
 #roster {
-    width: 1fr;
-    height: 1fr;
+    width: 2fr;
     border: round $primary;
+}
+
+#team-list {
+    width: 20;
+    border-right: solid $primary;
+}
+
+#roster-pane {
+    width: 1fr;
     padding: 0 1;
 }
 
@@ -46,16 +63,14 @@ Screen.my-turn {
     height: 1fr;
 }
 
-#analysis {
-    height: 9;
-    border: round $primary;
-    padding: 0 1;
-}
-
 #nominations {
     height: 1fr;
     min-height: 5;
     border: round $primary;
+}
+
+#nominations:focus, #team-list:focus {
+    border-left: thick $accent;
 }
 
 #command {
