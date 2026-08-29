@@ -372,7 +372,7 @@ async def test_init_backfill_refreshes_the_roster_panel(tmp_path):
         await app._poll()
         await pilot.pause()
         assert app.roster.budget_left == 146
-        assert ("Bijan Robinson", "RB", "T2", "-", "$54", "$43", "-11") in _roster_rows(app)
+        assert ("Bijan Robinson", "RB", "T2", "-", "$54", "300", "$43", "-11") in _roster_rows(app)
 
 
 @pytest.mark.asyncio
@@ -488,7 +488,7 @@ async def test_roster_panel_tracks_budget_and_slots(tmp_path):
         await pilot.pause()
         assert app.roster.budget_left == 148
         assert app.roster.spots_left == 15
-        assert ("Justin Jefferson", "WR", "T1", "-", "$52", "$52", "+0") in _roster_rows(app)
+        assert ("Justin Jefferson", "WR", "T1", "-", "$52", "310", "$52", "+0") in _roster_rows(app)
         assert ("WR", 1, 2, 5) in app.roster.slots
         assert ("QB", 0, 2, 3) in app.roster.slots
 
@@ -514,8 +514,8 @@ async def test_roster_table_keeps_every_player_as_the_roster_grows(tmp_path):
             await pilot.pause()
         rows = _roster_rows(app)
         assert len(rows) == 4
-        assert ("Amon-Ra St. Brown", "WR", "-", "-", "$46", "-", "-") in rows
-        assert ("Justin Jefferson", "WR", "T1", "-", "$36", "$52", "+16") in rows
+        assert ("Amon-Ra St. Brown", "WR", "-", "-", "$46", "-", "-", "-") in rows
+        assert ("Justin Jefferson", "WR", "T1", "-", "$36", "310", "$52", "+16") in rows
 
 
 @pytest.mark.asyncio
@@ -527,6 +527,17 @@ async def test_status_names_the_next_equivalent_in_tier(tmp_path):
         await pilot.pause()
         assert "Tier 2 RB" in app.status.tier_line
         assert "Kenneth Walker III" in app.status.tier_line
+
+
+@pytest.mark.asyncio
+async def test_status_shows_the_nominees_projected_points(tmp_path):
+    app, ws, _ = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        ws.feed(draft_ws.Bid(4, 3915511, 54, 25000, 12731))  # Bijan Robinson, 300.0 proj
+        await app._poll()
+        await pilot.pause()
+        assert app.status.projected_points == 300.0
+        assert "Proj 300" in str(app.status.render())
 
 
 @pytest.mark.asyncio
@@ -699,7 +710,7 @@ async def test_selecting_another_team_repoints_the_roster(tmp_path):
         app.team_list.move_cursor(row=app._team_rows.index("CCT"))
         await pilot.pause()
         assert app.selected_team == "CCT"
-        assert ("Bijan Robinson", "RB", "T2", "-", "$43", "$43", "+0") in _roster_rows(app)
+        assert ("Bijan Robinson", "RB", "T2", "-", "$43", "300", "$43", "+0") in _roster_rows(app)
         assert app.roster.budget_left == state.budget_left("CCT")
 
 
@@ -1352,6 +1363,17 @@ async def test_sort_command_reorders_by_the_given_key(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_sort_command_orders_by_projected_points(tmp_path):
+    app, _, _ = make_app(tmp_path, nomination_list=())
+    async with app.run_test() as pilot:
+        app._run_command("sort proj")
+        await pilot.pause()
+        names = [r.name for r in app._board_rows]
+        assert names == ["Justin Jefferson", "Bijan Robinson",
+                         "Kenneth Walker III", "Tony Pollard"]
+
+
+@pytest.mark.asyncio
 async def test_sort_command_rejects_an_unknown_key(tmp_path):
     app, _, _ = make_app(tmp_path)
     async with app.run_test() as pilot:
@@ -1726,8 +1748,8 @@ async def test_board_rows_show_dash_when_forward_inflation_is_none(tmp_path):
         cells = app._board_cells(row, {}, {})
     assert row.adjusted is None
     assert row.edge is None
-    assert cells[7] == "-"               # Adj column
-    assert str(cells[9]) == "-"          # Edge column
+    assert cells[8] == "-"               # Adj column
+    assert str(cells[10]) == "-"         # Edge column
 
 
 @pytest.mark.asyncio

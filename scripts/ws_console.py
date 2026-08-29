@@ -114,6 +114,7 @@ class StatusPanel(Static):
     high_bid = reactive(0)
     high_bidder = reactive("")
     clock_s = reactive(0)
+    projected_points = reactive(0.0)
     sheet_value = reactive(0)
     adjusted_value = reactive(None)
     espn_avg = reactive(None)
@@ -145,8 +146,9 @@ class StatusPanel(Static):
             "",
             f"High: [reverse bold] ${self.high_bid} [/reverse bold] ({self.high_bidder or '-'})   "
             f"Clock: [{clock_style}] {clock} [/{clock_style}]",
-            f"Sheet ${self.sheet_value} · Adjusted {adjusted} · "
-            f"ESPN {espn_avg} · Edge [{edge_style}]{edge}[/{edge_style}] · "
+            f"Proj {self.projected_points:.0f} · Sheet ${self.sheet_value} · "
+            f"Adjusted {adjusted} · ESPN {espn_avg} · "
+            f"Edge [{edge_style}]{edge}[/{edge_style}] · "
             f"max bid ${self.max_bid_amount}",
         ]
         lines += [line for line in (self.verdict_line, self.tier_line, self.bye_line) if line]
@@ -253,7 +255,7 @@ class RosterTable(DataTable):
 
     def on_mount(self) -> None:
         self.cursor_type = "none"
-        self.add_columns("Player", "Pos", "Tier", "Bye", "Paid", "Sheet", "Value")
+        self.add_columns("Player", "Pos", "Tier", "Bye", "Paid", "Proj", "Sheet", "Value")
 
 
 class NominationTable(DataTable):
@@ -265,7 +267,7 @@ class NominationTable(DataTable):
 
     def on_mount(self) -> None:
         self.cursor_type = "row"
-        self.add_columns("*", "Player", "Pos", "Need", "Tier", "Bye", "Sheet", "Adj", "ESPN", "Edge")
+        self.add_columns("*", "Player", "Pos", "Need", "Tier", "Bye", "Proj", "Sheet", "Adj", "ESPN", "Edge")
 
 
 class ConfirmBidScreen(ModalScreen[bool]):
@@ -603,6 +605,7 @@ class TextualWsApp(App):
         self.status.nominee = f"{name}{team}"
         self.status.high_bid = pointer.high_bid
         self.status.high_bidder = self._high_bidder_label()
+        self.status.projected_points = match.projected_points if match else 0.0
         self.status.sheet_value = match.value if match else 0
         self.status.adjusted_value = self._adjusted(match)
         self.status.espn_avg = match.espn_avg if match else None
@@ -758,6 +761,7 @@ class TextualWsApp(App):
                 f"T{match.tier}" if match else "-",
                 str(match.bye) if match and match.bye else "-",
                 f"${p.price}",
+                f"{match.projected_points:.0f}" if match else "-",
                 f"${match.value}" if match else "-",
                 self._diff_cell(match.value - p.price) if match else Text("-", style="dim"),
             )
@@ -951,6 +955,7 @@ class TextualWsApp(App):
             self._need_marker(v.position, needs, targets),
             f"T{v.tier}",
             str(v.bye) if v.bye else "-",
+            f"{v.projected_points:.0f}",
             f"${v.value}",
             f"${row.adjusted}" if row.adjusted is not None else "-",
             f"${v.espn_avg:.0f}" if v.espn_avg is not None else "-",

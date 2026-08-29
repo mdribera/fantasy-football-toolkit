@@ -501,7 +501,7 @@ class BoardRow:
         return self.valuation.name
 
 
-NOMINATION_BOARD_SORTS = ("rank", "rec", "pos", "tier", "sheet", "adj", "espn", "bye", "name")
+NOMINATION_BOARD_SORTS = ("rank", "rec", "pos", "tier", "sheet", "adj", "espn", "bye", "proj", "name")
 
 
 def nomination_board(
@@ -564,6 +564,7 @@ def nomination_board(
         "adj": lambda r: r.adjusted or 0,
         "espn": lambda r: r.valuation.espn_avg or 0,
         "bye": lambda r: r.valuation.bye or 0,
+        "proj": lambda r: r.valuation.projected_points,
         "name": lambda r: r.valuation.name.lower(),
     }
     key = key_funcs.get(sort, key_funcs["rank"])

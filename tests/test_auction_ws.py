@@ -246,20 +246,20 @@ def test_bid_verdict_boundaries_match_the_market_and_typo_guard_cutoffs():
 
 # --- nomination_board / save_nomination_list ---------------------------
 
-def _board_val(name, position, value, tier, bye=None, espn_avg=None):
+def _board_val(name, position, value, tier, bye=None, espn_avg=None, projected_points=0.0):
     return values.Valuation(
-        name=name, position=position, pro_team="", projected_points=0.0,
+        name=name, position=position, pro_team="", projected_points=projected_points,
         replacement_points=0.0, vorp=0.0, value=value, tier=tier,
         bye=bye, espn_avg=espn_avg,
     )
 
 
 BIG_BOARD = [
-    _board_val("Josh Allen", "QB", 40, 1, bye=7, espn_avg=33.76),
-    _board_val("Lamar Jackson", "QB", 33, 1, bye=8, espn_avg=45.0),
-    _board_val("Bijan Robinson", "RB", 43, 2, bye=5, espn_avg=60.0),
-    _board_val("Kenneth Walker III", "RB", 38, 2, bye=10, espn_avg=28.0),
-    _board_val("Justin Jefferson", "WR", 52, 1, bye=6, espn_avg=55.0),
+    _board_val("Josh Allen", "QB", 40, 1, bye=7, espn_avg=33.76, projected_points=400.0),
+    _board_val("Lamar Jackson", "QB", 33, 1, bye=8, espn_avg=45.0, projected_points=380.0),
+    _board_val("Bijan Robinson", "RB", 43, 2, bye=5, espn_avg=60.0, projected_points=300.0),
+    _board_val("Kenneth Walker III", "RB", 38, 2, bye=10, espn_avg=28.0, projected_points=280.0),
+    _board_val("Justin Jefferson", "WR", 52, 1, bye=6, espn_avg=55.0, projected_points=310.0),
 ]
 
 
@@ -347,6 +347,13 @@ def test_nomination_board_sort_bye():
     rows = auction.nomination_board(BIG_BOARD, state, inflation=1.0, sort="bye")
     byes = [r.valuation.bye for r in rows]
     assert byes == sorted(byes, reverse=True)
+
+
+def test_nomination_board_sort_proj():
+    state = _board_state()
+    rows = auction.nomination_board(BIG_BOARD, state, inflation=1.0, sort="proj")
+    proj = [r.valuation.projected_points for r in rows]
+    assert proj == sorted(proj, reverse=True)
 
 
 def test_nomination_board_sort_name_ascending():
