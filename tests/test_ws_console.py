@@ -730,6 +730,41 @@ async def test_team_list_cursor_survives_a_refresh_tick(tmp_path):
         assert app.team_list.cursor_row == app._team_rows.index("CCT")
 
 
+def test_left_cell_gradient_is_red_at_zero_and_green_at_a_full_cap(tmp_path):
+    app, _, _ = make_app(tmp_path)
+    cap = ws_console.config.SALARY_CAP
+    zero = app._left_cell(0)
+    full = app._left_cell(cap)
+    half = app._left_cell(cap // 2)
+    assert str(zero) == "$0"
+    assert zero.style == "#ff0000"
+    assert str(full) == f"${cap}"
+    assert full.style == "#00ff00"
+    assert str(half) == f"${cap // 2}"
+    assert half.style == "#808000"
+
+
+@pytest.mark.asyncio
+async def test_team_list_left_column_reflects_each_teams_own_gradient(tmp_path):
+    """T25's idea: red near $0 left, green near a full cap -- confirmed
+    against two teams at different spend levels rather than just the cell
+    helper in isolation, so a refresh tick's wiring is covered too."""
+    app, ws, state = make_app(tmp_path)
+    state.record("Justin Jefferson", "WR", 52, "ME")     # ME: $148 left, mostly green
+    state.record("Bijan Robinson", "RB", 43, "CCT")       # CCT: $157 left, closer to full
+    async with app.run_test() as pilot:
+        app._refresh_panels()
+        await pilot.pause()
+        rows = {app.team_list.get_row_at(i)[0].plain: app.team_list.get_row_at(i)[1]
+                for i in range(app.team_list.row_count)}
+        me_expected = app._left_cell(state.budget_left("ME"))
+        cct_expected = app._left_cell(state.budget_left("CCT"))
+        assert (rows["ME"].plain, rows["ME"].style) == (me_expected.plain, me_expected.style)
+        assert (rows["CCT"].plain, rows["CCT"].style) == (cct_expected.plain, cct_expected.style)
+        # Different budgets land at different points on the gradient.
+        assert rows["ME"].style != rows["CCT"].style
+
+
 @pytest.mark.asyncio
 async def test_status_guardrails_stay_on_my_team_while_scouting_another(tmp_path):
     """Max bid and the pre-bid bye-clash warning in the merged status panel

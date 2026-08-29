@@ -674,6 +674,17 @@ class TextualWsApp(App):
     def _update_roster_title(self) -> None:
         self.roster_box.border_title = f"{self.selected_team} -- tab to focus, up/down to select"
 
+    def _left_cell(self, budget_left: int) -> Text:
+        """TeamList's Left column, red at $0 and green at a full
+        config.SALARY_CAP -- a continuous read of how much a team has left
+        to spend, not a threshold state, so this interpolates rather than
+        bucketing into red/yellow/green the way the roster header's slot
+        coloring does."""
+        fraction = max(0.0, min(1.0, budget_left / config.SALARY_CAP))
+        red = round(255 * (1 - fraction))
+        green = round(255 * fraction)
+        return Text(f"${budget_left}", style=f"#{red:02x}{green:02x}00")
+
     def _refresh_teams(self) -> None:
         """Rebuild the team list every refresh, same convention _reload_board
         uses for the nomination board, so the Left column stays live without
@@ -683,7 +694,7 @@ class TextualWsApp(App):
         self.team_list.clear()
         for team in teams:
             label = Text(team, style="bold" if team == self.state.my_team else "")
-            self.team_list.add_row(label, f"${self.state.budget_left(team)}")
+            self.team_list.add_row(label, self._left_cell(self.state.budget_left(team)))
         self._team_rows = teams
         if not teams:
             return
