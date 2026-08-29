@@ -17,25 +17,22 @@ Screen.my-turn {
 }
 
 #status {
-    height: 8;
+    height: 10;
     border: round $primary;
     padding: 0 1;
 }
 
 #middle {
-    height: 15;
-}
-
-#feed {
-    width: 3fr;
+    height: 1fr;
 }
 
 #bidlog {
-    height: 1fr;
+    width: 1fr;
     border: round $primary;
 }
 
-#output {
+#salelog {
+    width: 1fr;
     height: 1fr;
     border: round $primary;
 }
@@ -63,9 +60,19 @@ Screen.my-turn {
     height: 1fr;
 }
 
+#bottom {
+    height: 1fr;
+}
+
 #nominations {
+    width: 3fr;
     height: 1fr;
     min-height: 5;
+    border: round $primary;
+}
+
+#output {
+    width: 1fr;
     border: round $primary;
 }
 

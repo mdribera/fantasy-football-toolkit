@@ -111,7 +111,7 @@ class StatusPanel(Static):
         if not self.nominee:
             return Text.from_markup("[dim]No active nomination.[/dim]")
         clock = f"{self.clock_s}s" if self.clock_s else "-"
-        clock_style = "bold red" if 0 < self.clock_s <= 5 else "yellow"
+        clock_style = "reverse bold red" if 0 < self.clock_s <= 5 else "reverse bold yellow"
         header = f"[bold]{self.nominee}[/bold]"
         if self.tier:
             header += f"  T{self.tier}"
@@ -124,8 +124,9 @@ class StatusPanel(Static):
         edge = f"{self.edge:+d}" if self.edge is not None else "-"
         lines = [
             header,
-            f"High: [bold]${self.high_bid}[/bold] ({self.high_bidder or '-'})   "
-            f"Clock: [{clock_style}]{clock}[/{clock_style}]",
+            "",
+            f"High: [reverse bold] ${self.high_bid} [/reverse bold] ({self.high_bidder or '-'})   "
+            f"Clock: [{clock_style}] {clock} [/{clock_style}]",
             f"Sheet ${self.sheet_value} · Adjusted {adjusted} · "
             f"ESPN {espn_avg} · Edge [{edge_style}]{edge}[/{edge_style}] · "
             f"max bid ${self.max_bid_amount}",
@@ -150,6 +151,20 @@ class OutputLog(RichLog):
     bid log so a result you asked for survives the next bid or sale."""
 
     can_focus = False
+
+
+class SaleLog(DataTable):
+    """Every completed sale, oldest first -- a standing ledger next to the
+    fast-moving BidLog, which only ever shows the current nomination. Rebuilt
+    from state.purchases on every refresh rather than appended on Sold, so it
+    stays correct across a reconnect or an INIT reconcile that rewrites
+    purchases wholesale instead of emitting Sold events of its own."""
+
+    can_focus = False
+
+    def on_mount(self) -> None:
+        self.cursor_type = "none"
+        self.add_columns("Player", "Team", "Paid", "Edge")
 
 
 class TeamList(DataTable):
@@ -179,15 +194,20 @@ class RosterPanel(Static):
     bye_clash = reactive(None)   # bye week two rostered QBs share, or None
 
     def _slot_label(self, pos: str, have: int, need: int, target: int) -> str:
-        color = "green" if have >= need else "yellow"
-        label = f"{pos} {have}/{need}"
         # A starting requirement met is not the same as a full bench -- QB
         # especially, where the third quarterback exists for byes and the
-        # in-season waiver wire is empty, so this can't wait until the
-        # position "needs" attention the way needs() alone would report.
-        if have >= need and have < target:
-            hint = "3rd for byes" if pos == "QB" else f"want {target}"
-            label += f" ({hint})"
+        # in-season waiver wire is empty, so this can't collapse to a single
+        # met/unmet color the way needs() alone would suggest. Three states:
+        # short of the starting requirement, starters filled but bench target
+        # not, and target fully met. Exact counts toward the target live on
+        # `:me`'s footer, not here.
+        if have < need:
+            color = "red"
+        elif have < target:
+            color = "yellow"
+        else:
+            color = "green"
+        label = f"{pos} {have}/{need}"
         if pos == "QB" and self.bye_clash is not None:
             color = "red"
             label += f" bye clash wk{self.bye_clash}!"
@@ -215,7 +235,7 @@ class RosterTable(DataTable):
 
     def on_mount(self) -> None:
         self.cursor_type = "none"
-        self.add_columns("Player", "Pos", "Paid")
+        self.add_columns("Player", "Pos", "Tier", "Bye", "Paid", "Sheet", "Value")
 
 
 class NominationTable(DataTable):
@@ -236,6 +256,7 @@ class ConfirmBidScreen(ModalScreen[bool]):
 
     BINDINGS = [
         Binding("y", "confirm", "yes"),
+        Binding("b", "confirm", "yes"),
         Binding("n", "refuse", "no"),
         Binding("escape", "refuse", "no"),
     ]
@@ -251,7 +272,7 @@ class ConfirmBidScreen(ModalScreen[bool]):
             Text.from_markup(
                 f"[yellow]{self.reason}[/yellow]\n\n"
                 f"Bid [bold]${self.amount}[/bold] on [bold]{self.player}[/bold]?\n\n"
-                f"[bold]y[/bold] yes    [bold]n[/bold] no"
+                f"[bold]y[/bold] / [bold]b[/bold] yes    [bold]n[/bold] no"
             ),
             id="confirm-dialog",
         )
@@ -310,15 +331,16 @@ class TextualWsApp(App):
         yield Banner(id="banner")
         yield StatusPanel(id="status")
         with Horizontal(id="middle"):
-            with Vertical(id="feed"):
-                yield BidLog(id="bidlog", markup=True, min_width=30, wrap=True)
-                yield OutputLog(id="output", markup=True, min_width=30, wrap=True)
+            yield BidLog(id="bidlog", markup=True, min_width=30, wrap=True)
+            yield SaleLog(id="salelog")
             with Horizontal(id="roster"):
                 yield TeamList(id="team-list")
                 with Vertical(id="roster-pane"):
                     yield RosterPanel(id="roster-header")
                     yield RosterTable(id="roster-table")
-        yield NominationTable(id="nominations")
+        with Horizontal(id="bottom"):
+            yield NominationTable(id="nominations")
+            yield OutputLog(id="output", markup=True, min_width=30, wrap=True)
         yield Input(id="command", placeholder="/name | pos QB | sort rec | star | "
                     "b 45 | team 4 | undo | market | teams | best RB | need | me | quit")
         yield Footer()
@@ -327,6 +349,7 @@ class TextualWsApp(App):
         self.banner = self.query_one("#banner", Banner)
         self.status = self.query_one("#status", StatusPanel)
         self.bidlog = self.query_one("#bidlog", BidLog)
+        self.salelog = self.query_one("#salelog", SaleLog)
         self.output = self.query_one("#output", OutputLog)
         self.team_list = self.query_one("#team-list", TeamList)
         self.roster_box = self.query_one("#roster", Horizontal)
@@ -334,22 +357,23 @@ class TextualWsApp(App):
         self.roster_table = self.query_one("#roster-table", RosterTable)
         self.nominations = self.query_one("#nominations", NominationTable)
         self.command = self.query_one("#command", Input)
+        self._sales_shown = 0
 
         self.bidlog.border_title = "Bid log (this nomination)"
+        self.salelog.border_title = "Sale log"
         self.output.border_title = "Output (:me :teams :market :best :need)"
         self._update_roster_title()
-        self.nominations.border_title = (
-            "Board (up/down, n to nominate, space to star, / to search) -- "
-            "star / name / pos / tier / bye / sheet / adjusted / espn avg / edge")
-        self.status.border_title = (
-            "NOW -- Sheet: your model's price; Adjusted: Sheet adjusted for "
-            "how the room is actually paying; ESPN: ESPN's own average "
-            "auction value (1QB format, a market anchor not a price); Edge: "
-            "Sheet minus Adjusted, positive is a bargain")
+        self.nominations.border_title = "Board (n nominate, space star, / search)"
+        self.status.border_title = "NOW"
 
         self._reload_board()
         self._refresh_panels()
         self.set_interval(POLL_INTERVAL_S, self._poll)
+        # Explicit rather than relying on Textual's auto-focus: the board is
+        # where hotkeys (b/n/space) act, and an Input -- even one hidden with
+        # display:none -- is still a focus candidate that would otherwise
+        # swallow those keys as typed text instead of letting them bubble.
+        self.nominations.focus()
 
     async def _poll(self) -> None:
         """Drain the websocket and check the bid watchdog every tick,
@@ -593,7 +617,18 @@ class TextualWsApp(App):
     def _refresh_panels(self) -> None:
         self._refresh_teams()
         self._refresh_roster()
+        self._refresh_sales()
         self._refresh_analysis()
+
+    def _diff_cell(self, diff: int | None) -> Text:
+        """Sheet minus what was paid, colored -- positive is a bargain and
+        reads green, negative red, unpriced dim. The same yardstick the
+        board's Edge column already uses (_board_cells below), shared here
+        with RosterTable's Value column and SaleLog's Edge column."""
+        if diff is None:
+            return Text("-", style="dim")
+        style = "green" if diff > 0 else "red" if diff < 0 else "dim"
+        return Text.from_markup(f"[{style}]{diff:+d}[/{style}]")
 
     def _update_roster_title(self) -> None:
         self.roster_box.border_title = f"{self.selected_team} -- tab to focus, up/down to select"
@@ -663,8 +698,34 @@ class TextualWsApp(App):
         self.roster.bye_clash = auction.rostered_qb_bye_clash(self.state, team, self.vals)
         self.roster_table.clear()
         for p in self.state.purchases:
-            if p.team == team:
-                self.roster_table.add_row(p.player, p.position, f"${p.price}")
+            if p.team != team:
+                continue
+            match = self.lookup.get(p.player.lower())
+            self.roster_table.add_row(
+                p.player, p.position,
+                f"T{match.tier}" if match else "-",
+                str(match.bye) if match and match.bye else "-",
+                f"${p.price}",
+                f"${match.value}" if match else "-",
+                self._diff_cell(match.value - p.price) if match else Text("-", style="dim"),
+            )
+
+    def _refresh_sales(self) -> None:
+        """Rebuild from state.purchases every refresh, the same convention
+        _refresh_roster and _refresh_teams already use -- correct after a
+        reconcile that rewrites purchases wholesale, not just after an
+        appended Sold event."""
+        self.salelog.clear()
+        for p in self.state.purchases:
+            match = self.lookup.get(p.player.lower())
+            self.salelog.add_row(
+                p.player, p.team, f"${p.price}",
+                self._diff_cell(match.value - p.price) if match else Text("-", style="dim"),
+            )
+        grew = len(self.state.purchases) > self._sales_shown
+        self._sales_shown = len(self.state.purchases)
+        if grew:
+            self.salelog.scroll_end(animate=False)
 
     def _refresh_analysis(self) -> None:
         pointer = self.ws.pointer
@@ -721,12 +782,18 @@ class TextualWsApp(App):
         self.exit()
 
     def action_dismiss_banner(self) -> None:
-        # A busy command line owns escape for its own purposes (clearing
-        # its text, in Textual's own Input widget); stealing it here would
-        # eat a keystroke Mark meant for what he's typing.
+        # Escape backs out of the most modal thing open. With the command
+        # line up, that's the command line -- Textual's own Input widget has
+        # no escape binding of its own, so without this it would do nothing.
         if self.command.has_focus:
+            self._close_command()
             return
         self.banner.dismiss()
+
+    def _close_command(self) -> None:
+        self.command.value = ""
+        self.command.display = False
+        self.nominations.focus()
 
     def action_bid(self) -> None:
         self._start_bid([])
@@ -933,9 +1000,7 @@ class TextualWsApp(App):
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         line = event.value.strip()
-        event.input.value = ""
-        event.input.display = False
-        self.nominations.focus()
+        self._close_command()
         if line:
             self._run_command(line)
 

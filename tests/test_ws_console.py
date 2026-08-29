@@ -129,9 +129,19 @@ def _stub_no_read(state) -> None:
 
 
 def _roster_rows(app) -> list[tuple]:
-    """Every row currently in the roster DataTable, as plain tuples."""
-    return [tuple(app.roster_table.get_row_at(i))
+    """Every row currently in the roster DataTable, as plain-text tuples --
+    str() rather than a bare tuple() so a colored Value cell (a rich.Text,
+    for the Sheet-minus-Paid column) compares equal to a plain string just
+    like every other cell."""
+    return [tuple(str(cell) for cell in app.roster_table.get_row_at(i))
             for i in range(app.roster_table.row_count)]
+
+
+def _sale_rows(app) -> list[tuple]:
+    """Every row currently in the Sale log DataTable, as plain-text tuples --
+    same str()-per-cell convention as _roster_rows, for the same reason."""
+    return [tuple(str(cell) for cell in app.salelog.get_row_at(i))
+            for i in range(app.salelog.row_count)]
 
 
 def make_app(tmp_path, nomination_list=("Justin Jefferson", "Kenneth Walker III"),
@@ -167,6 +177,7 @@ async def test_app_mounts_every_panel(tmp_path):
     async with app.run_test():
         assert app.query_one("#status", ws_console.StatusPanel)
         assert app.query_one("#bidlog", ws_console.BidLog)
+        assert app.query_one("#salelog", ws_console.SaleLog)
         assert app.query_one("#output", ws_console.OutputLog)
         assert app.query_one("#team-list", ws_console.TeamList)
         assert app.query_one("#roster-header", ws_console.RosterPanel)
@@ -193,6 +204,36 @@ async def test_bid_updates_the_status_panel_and_log(tmp_path):
         assert "Bijan Robinson" in app.status.nominee
         assert app.status.high_bid == 54
         assert app.status.high_bidder == "CCT"
+
+
+def test_status_panel_breaks_after_the_name_and_reverses_high_and_clock():
+    """T29: a line break after the player name, and High/$NN + Clock/Ns loud
+    enough to read across a room via bold reverse-video rather than a second
+    panel height a terminal can't give a bigger font. Plain rendering
+    unaffected -- direct on an unmounted StatusPanel, same as any other pure
+    render-formatting check."""
+    panel = ws_console.StatusPanel()
+    panel.nominee = "Bijan Robinson (RB, ATL)"
+    panel.high_bid = 54
+    panel.high_bidder = "CCT"
+    panel.sheet_value = 43
+    panel.clock_s = 20                      # plenty of time -- yellow, not red
+    text = panel.render()
+    plain = str(text)
+    lines = plain.split("\n")
+    assert lines[0] == "Bijan Robinson (RB, ATL)"
+    assert lines[1] == ""
+    assert "$54" in lines[2] and "20s" in lines[2]
+    high_styles = [style for start, end, style in text.spans if "$54" in plain[start:end]]
+    assert any("reverse" in style for style in high_styles)
+    clock_styles = [style for start, end, style in text.spans if "20s" in plain[start:end]]
+    assert any("reverse" in style and "red" not in style for style in clock_styles)
+
+    panel.clock_s = 5                       # under the wire -- red
+    text = panel.render()
+    plain = str(text)
+    clock_styles = [style for start, end, style in text.spans if "5s" in plain[start:end]]
+    assert any("reverse" in style and "red" in style for style in clock_styles)
 
 
 @pytest.mark.asyncio
@@ -245,6 +286,52 @@ async def test_sold_skips_a_pick_already_entered_by_hand(tmp_path):
     assert len(state.purchases) == 1
 
 
+@pytest.mark.asyncio
+async def test_sale_log_shows_completed_sales_oldest_first(tmp_path):
+    """T27: a standing ledger next to the fast-moving BidLog, in draft order
+    -- Edge is sheet minus paid, the same yardstick and sign as the board's
+    own Edge column, positive (a bargain) reading green."""
+    app, ws, state = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        ws.feed(draft_ws.Sold(4, 3915511, 1, 54, 0))    # Bijan Robinson, sheet $43
+        await app._poll()
+        await pilot.pause()
+        ws.feed(draft_ws.Sold(4, 3915514, 1, 40, 0))    # Justin Jefferson, sheet $52
+        await app._poll()
+        await pilot.pause()
+    assert _sale_rows(app) == [
+        ("Bijan Robinson", "CCT", "$54", "-11"),
+        ("Justin Jefferson", "CCT", "$40", "+12"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_sale_log_shows_a_dash_for_a_player_off_the_board(tmp_path):
+    """A sale for someone with no priced row (a kicker/D-ST streamed for $1,
+    say) must render, not raise, since there's nothing to look up a sheet
+    value or edge from."""
+    app, ws, state = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        state.record_pick("Mystery Player", "K", 1, "HH", espn_pick_id=42)
+        app._refresh_panels()
+        await pilot.pause()
+    assert ("Mystery Player", "HH", "$1", "-") in _sale_rows(app)
+
+
+@pytest.mark.asyncio
+async def test_sale_log_survives_an_init_reconcile(tmp_path):
+    """The log is rebuilt from state.purchases every refresh rather than
+    appended on Sold, so it stays correct across a reconnect -- INIT rewrites
+    purchases wholesale and never passes through the Sold branch at all."""
+    app, ws, state = make_app(tmp_path)
+    blob = _build_init_blob(999, {1: (6, 3915511, 54)})   # team 6 = ME
+    async with app.run_test() as pilot:
+        ws.feed(draft_ws.Init(blob))
+        await app._poll()
+        await pilot.pause()
+    assert ("Bijan Robinson", "ME", "$54", "-11") in _sale_rows(app)
+
+
 def _build_init_blob(league_id: int, sales: dict[int, tuple[int, int, int]]) -> str:
     """pick_number -> (team_id, player_id, price); unlisted picks are unsold.
     Duplicated from tests/test_draft_ws_parser.py's builder, which is the one
@@ -285,7 +372,7 @@ async def test_init_backfill_refreshes_the_roster_panel(tmp_path):
         await app._poll()
         await pilot.pause()
         assert app.roster.budget_left == 146
-        assert ("Bijan Robinson", "RB", "$54") in _roster_rows(app)
+        assert ("Bijan Robinson", "RB", "T2", "-", "$54", "$43", "-11") in _roster_rows(app)
 
 
 @pytest.mark.asyncio
@@ -401,7 +488,7 @@ async def test_roster_panel_tracks_budget_and_slots(tmp_path):
         await pilot.pause()
         assert app.roster.budget_left == 148
         assert app.roster.spots_left == 15
-        assert ("Justin Jefferson", "WR", "$52") in _roster_rows(app)
+        assert ("Justin Jefferson", "WR", "T1", "-", "$52", "$52", "+0") in _roster_rows(app)
         assert ("WR", 1, 2, 5) in app.roster.slots
         assert ("QB", 0, 2, 3) in app.roster.slots
 
@@ -427,8 +514,8 @@ async def test_roster_table_keeps_every_player_as_the_roster_grows(tmp_path):
             await pilot.pause()
         rows = _roster_rows(app)
         assert len(rows) == 4
-        assert ("Amon-Ra St. Brown", "WR", "$46") in rows
-        assert ("Justin Jefferson", "WR", "$36") in rows
+        assert ("Amon-Ra St. Brown", "WR", "-", "-", "$46", "-", "-") in rows
+        assert ("Justin Jefferson", "WR", "T1", "-", "$36", "$52", "+16") in rows
 
 
 @pytest.mark.asyncio
@@ -542,7 +629,10 @@ async def test_status_espn_average_and_edge_match_the_board_row(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_roster_header_flags_the_third_qb_for_byes(tmp_path):
+async def test_roster_header_colors_by_need_and_target(tmp_path):
+    """T29 drops the "(want X)"/"(3rd for byes)" text from the slot label;
+    the bench target still has to be visible, now as a third color state
+    instead of a second line of prose. Exact counts move to `:me`'s footer."""
     app, ws, state = make_app(tmp_path)
     state.record("Josh Allen", "QB", 60, "ME")
     state.record("Lamar Jackson", "QB", 40, "ME")
@@ -551,7 +641,11 @@ async def test_roster_header_flags_the_third_qb_for_byes(tmp_path):
         await pilot.pause()
         text = str(app.roster.render())
         assert "QB 2/2" in text
-        assert "3rd for byes" in text
+        assert "3rd for byes" not in text
+        assert "want" not in text
+        assert app.roster._slot_label("QB", 0, 2, 3) == "[red]QB 0/2[/]"
+        assert app.roster._slot_label("QB", 2, 2, 3) == "[yellow]QB 2/2[/]"
+        assert app.roster._slot_label("QB", 3, 2, 3) == "[green]QB 3/2[/]"
 
 
 @pytest.mark.asyncio
@@ -605,7 +699,7 @@ async def test_selecting_another_team_repoints_the_roster(tmp_path):
         app.team_list.move_cursor(row=app._team_rows.index("CCT"))
         await pilot.pause()
         assert app.selected_team == "CCT"
-        assert ("Bijan Robinson", "RB", "$43") in _roster_rows(app)
+        assert ("Bijan Robinson", "RB", "T2", "-", "$43", "$43", "+0") in _roster_rows(app)
         assert app.roster.budget_left == state.budget_left("CCT")
 
 
@@ -865,6 +959,31 @@ async def test_escape_does_not_dismiss_while_the_command_line_has_focus(tmp_path
 
 
 @pytest.mark.asyncio
+async def test_escape_closes_the_command_line(tmp_path):
+    """T26: Textual's own Input widget has no escape binding of its own, so
+    without a real close action here escape did nothing while typing a `:`
+    command -- action_dismiss_banner's no-op (see the test above) was the
+    whole story."""
+    app, ws, _ = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        ws.alerts.append("no frames received in 45s -- forcing reconnect")
+        await app._poll()
+        await pilot.pause()
+        await pilot.press("colon")
+        await pilot.pause()
+        app.command.value = "pos QB"
+        assert app.command.display
+        await pilot.press("escape")
+        await pilot.pause()
+        assert not app.command.display
+        assert app.command.value == ""
+        assert app.nominations.has_focus
+        # The command line was the more modal thing open -- a still-showing
+        # banner from before it opened has to survive closing it.
+        assert app.banner.display
+
+
+@pytest.mark.asyncio
 async def test_drained_alerts_and_feed_errors_also_land_in_the_bid_log(tmp_path):
     app, ws, _ = make_app(tmp_path)
     async with app.run_test() as pilot:
@@ -937,6 +1056,24 @@ async def test_a_big_jump_opens_the_modal_and_y_confirms(tmp_path):
         await pilot.pause()
         assert isinstance(app.screen, ws_console.ConfirmBidScreen)
         await pilot.press("y")
+        await pilot.pause()
+    assert ws.client.sent == [("BID", 3915511, 60)]
+
+
+@pytest.mark.asyncio
+async def test_a_big_jump_opens_the_modal_and_b_also_confirms(tmp_path):
+    """T31: b is the normal bid key, so pressing it again to confirm the
+    typo guard has to count as "yes, bid anyway" too, not force a reach for
+    y instead."""
+    app, ws, _ = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        ws.feed(draft_ws.Bid(4, 3915511, 40, 25000, 12731))
+        await app._poll()
+        await pilot.pause()
+        app._start_bid(["60"])          # $20 over, trips TYPO_GUARD_JUMP
+        await pilot.pause()
+        assert isinstance(app.screen, ws_console.ConfirmBidScreen)
+        await pilot.press("b")
         await pilot.pause()
     assert ws.client.sent == [("BID", 3915511, 60)]
 
@@ -1289,8 +1426,11 @@ async def test_sold_flags_a_mismatched_duplicate_loudly(tmp_path):
         assert app.banner.display
         # The flashed message is long enough to wrap across several bid log
         # rows at the panel's width, so check the joined plain text rather
-        # than one row at a time.
-        assert "may now be wrong" in " ".join(line.text for line in app.bidlog.lines)
+        # than one row at a time -- collapsing whitespace first, since the
+        # exact wrap points (and hence where a line break leaves a doubled
+        # space) shift with the panel's width.
+        joined = " ".join(" ".join(line.text.split()) for line in app.bidlog.lines)
+        assert "may now be wrong" in joined
     assert len(state.purchases) == 1                    # not double-recorded either
 
 
