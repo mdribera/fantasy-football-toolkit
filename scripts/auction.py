@@ -466,6 +466,8 @@ class MirrorController:
 
 
 NOMINATION_LIST_PATH = Path(__file__).resolve().parents[1] / "data" / "nomination-list.txt"
+WS_REPLAY_STATE_PATH = (Path(__file__).resolve().parents[1] / "data" / "cache" /
+                        "ws-console-replay-state.json")
 
 
 def load_nomination_list(path: Path) -> list[str]:
@@ -765,6 +767,15 @@ def main() -> int:
                         help="use the live draft-room websocket instead of polling mDraftDetail")
     parser.add_argument("--join-url-file", type=Path, default=DEFAULT_JOIN_URL_FILE,
                         help=f"file holding the pasted JOIN URL for --ws (default: {DEFAULT_JOIN_URL_FILE})")
+    parser.add_argument("--ws-replay", metavar="PATH",
+                        help="with --ws, drive the console from a recorded ws-log-*.jsonl "
+                             "capture instead of a live socket (for rehearsal) -- no join URL "
+                             "needed, and never touches data/draft-state.json or "
+                             "data/nomination-list.txt")
+    parser.add_argument("--replay-speed", type=float, default=1.0,
+                        help="--ws-replay playback speed multiplier (default 1.0x the "
+                             "capture's own real-time pacing; 0 plays back with no pacing "
+                             "at all)")
     parser.add_argument("--mirror", action="store_true",
                         help="fallback: listen for the browser mirror snippet instead of --ws")
     parser.add_argument("--mirror-port", type=int, default=8765,
@@ -781,12 +792,23 @@ def main() -> int:
         parser.error("--ws/--mirror replace the REST sync path; drop --no-sync/--replay")
     if args.ws and args.mirror:
         parser.error("--ws and --mirror are alternatives; pick one")
+    if args.ws_replay and not args.ws:
+        parser.error("--ws-replay only applies with --ws")
 
     vals = load_values()
-    state = load_state(args.fresh)
-    if args.fresh:
-        console.print("[yellow]--fresh: starting with an empty draft state; "
-                      "data/draft-state.json will be overwritten on first save.[/yellow]")
+    if args.ws_replay:
+        # A dedicated scratch path, backed up by load_state's own --fresh
+        # logic if a previous replay left one behind -- a rehearsal must
+        # never be able to touch real draft-day state.
+        state = load_state(True, path=WS_REPLAY_STATE_PATH)
+        console.print(f"[yellow]--ws-replay: scratch draft state at "
+                      f"{WS_REPLAY_STATE_PATH}, never touches "
+                      "data/draft-state.json.[/yellow]")
+    else:
+        state = load_state(args.fresh)
+        if args.fresh:
+            console.print("[yellow]--fresh: starting with an empty draft state; "
+                          "data/draft-state.json will be overwritten on first save.[/yellow]")
     if args.my_team:
         state.my_team = draft_state.normalize_team(args.my_team)
     lookup = {v.name.lower(): v for v in vals}
@@ -799,11 +821,19 @@ def main() -> int:
 
     resolver = draft_sync.PlayerResolver(VALUES_PATH)
     sync: SyncController | None = None
-    ws: WsController | None = None
+    ws = None  # WsController, or ws_replay.ReplayController for --ws-replay
     mirror: MirrorController | None = None
     nomination_list = load_nomination_list(NOMINATION_LIST_PATH)
 
-    if args.ws:
+    if args.ws and args.ws_replay:
+        # Imported here, not at module scope: ws_replay imports this module
+        # (the same shape ws_console does), so pulling it in only when
+        # actually replaying keeps that circularity confined to this branch.
+        from ws_replay import ReplayController
+
+        ws = ReplayController(Path(args.ws_replay), speed=args.replay_speed)
+        ws.start()
+    elif args.ws:
         join_url = load_join_url(args.join_url_file)
         ws = WsController(join_url, cred)
         ws.start()
@@ -818,7 +848,9 @@ def main() -> int:
         sync = SyncController(source, resolver, args.interval)
         sync.start()
 
-    if ws:
+    if args.ws_replay:
+        sync_note = f"replay of {args.ws_replay} at {args.replay_speed}x"
+    elif ws:
         sync_note = "live websocket"
     elif sync:
         sync_note = "auto-sync every %ds" % args.interval
@@ -833,7 +865,10 @@ def main() -> int:
         # and the other modes have no reason to pull in textual.
         from ws_console import run_ws_console
 
-        run_ws_console(ws, state, resolver, vals, nomination_list, NOMINATION_LIST_PATH)
+        # A replay never writes the starred queue back to the real file --
+        # nomination_list_path=None makes space a harmless no-op instead.
+        list_path = None if args.ws_replay else NOMINATION_LIST_PATH
+        run_ws_console(ws, state, resolver, vals, nomination_list, list_path)
         ws.client.stop()
         state.save()
         console.print("Saved.")
