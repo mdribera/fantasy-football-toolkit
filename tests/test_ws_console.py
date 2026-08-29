@@ -1273,13 +1273,19 @@ async def test_command_b_with_an_amount_bids_that_amount(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_command_undo_removes_the_last_purchase(tmp_path):
+async def test_command_undo_is_not_available_in_ws_mode(tmp_path):
+    """T24: --ws has no manual entry for :undo to correct, never runs the
+    REST poller (so _suppressed_pick_ids has nothing to suppress against),
+    and reconcile_init treats the server as authoritative -- an undone
+    auto-recorded sale would just come back at the next INIT anyway. The
+    plain REST console's own 'undo' is unaffected and keeps working."""
     app, ws, state = make_app(tmp_path)
     state.record("Justin Jefferson", "WR", 52, "ME")
     async with app.run_test() as pilot:
         app._run_command("undo")
         await pilot.pause()
-    assert state.purchases == []
+    assert state.purchases != []
+    assert any("Unrecognized" in str(line) for line in app.output.lines)
 
 
 @pytest.mark.asyncio

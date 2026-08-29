@@ -363,7 +363,7 @@ class TextualWsApp(App):
             yield NominationTable(id="nominations")
             yield OutputLog(id="output", markup=True, min_width=30, wrap=True)
         yield Input(id="command", placeholder="/name | pos QB | sort rec | star | "
-                    "b 45 | team 4 | undo | market | teams | best RB | need | me | quit")
+                    "b 45 | team 4 | market | teams | best RB | need | me | quit")
         yield Footer()
 
     async def on_mount(self) -> None:
@@ -1134,14 +1134,9 @@ class TextualWsApp(App):
             pos = cmd[1] if len(cmd) > 1 and not cmd[1].isdigit() else None
             limit = next((int(c) for c in cmd[1:] if c.isdigit()), 15)
             self._output(auction.best_table(self.state, self.vals, pos, limit))
-        elif head == "undo":
-            removed = self.state.undo()
-            self._output(f"Removed: {removed}" if removed else "Nothing to undo.", clear=False)
-            self._refresh_panels()
-            self._reload_board()
         else:
             self._output("[yellow]Unrecognized.[/yellow] Use: /name, pos, sort, star, "
-                        "clear, team, b/undo/market/teams/best/need/me/quit", clear=False)
+                        "clear, team, b/market/teams/best/need/me/quit", clear=False)
 
 
 def run_ws_console(ws, state: draft_state.DraftState,
