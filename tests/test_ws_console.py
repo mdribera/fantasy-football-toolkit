@@ -300,8 +300,8 @@ async def test_sale_log_shows_completed_sales_oldest_first(tmp_path):
         await app._poll()
         await pilot.pause()
     assert _sale_rows(app) == [
-        ("Bijan Robinson", "CCT", "$54", "-11"),
-        ("Justin Jefferson", "CCT", "$40", "+12"),
+        ("Bijan Robinson", "RB", "CCT", "$54", "-11"),
+        ("Justin Jefferson", "WR", "CCT", "$40", "+12"),
     ]
 
 
@@ -315,7 +315,7 @@ async def test_sale_log_shows_a_dash_for_a_player_off_the_board(tmp_path):
         state.record_pick("Mystery Player", "K", 1, "HH", espn_pick_id=42)
         app._refresh_panels()
         await pilot.pause()
-    assert ("Mystery Player", "HH", "$1", "-") in _sale_rows(app)
+    assert ("Mystery Player", "K", "HH", "$1", "-") in _sale_rows(app)
 
 
 @pytest.mark.asyncio
@@ -329,7 +329,7 @@ async def test_sale_log_survives_an_init_reconcile(tmp_path):
         ws.feed(draft_ws.Init(blob))
         await app._poll()
         await pilot.pause()
-    assert ("Bijan Robinson", "ME", "$54", "-11") in _sale_rows(app)
+    assert ("Bijan Robinson", "RB", "ME", "$54", "-11") in _sale_rows(app)
 
 
 def _build_init_blob(league_id: int, sales: dict[int, tuple[int, int, int]]) -> str:

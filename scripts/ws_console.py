@@ -182,7 +182,7 @@ class SaleLog(DataTable):
 
     def on_mount(self) -> None:
         self.cursor_type = "none"
-        self.add_columns("Player", "Team", "Paid", "Edge")
+        self.add_columns("Player", "Pos", "Team", "Paid", "Edge")
 
 
 class TeamList(DataTable):
@@ -760,7 +760,7 @@ class TextualWsApp(App):
         for p in self.state.purchases:
             match = self.lookup.get(p.player.lower())
             self.salelog.add_row(
-                p.player, p.team, f"${p.price}",
+                p.player, p.position, p.team, f"${p.price}",
                 self._diff_cell(match.value - p.price) if match else Text("-", style="dim"),
             )
         grew = len(self.state.purchases) > self._sales_shown
