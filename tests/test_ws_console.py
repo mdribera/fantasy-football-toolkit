@@ -789,6 +789,59 @@ async def test_n_nominates_the_highlighted_row(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_nomination_rejection_alerts_with_the_player_name(tmp_path):
+    """T25: ESPN can refuse a NOMINATE outright (confirmed 2026-08-28 against
+    a real practice draft -- see docs/notes/rehearsal-log.md). The console
+    must name the rejected player and say the turn is still open, not treat
+    it as raw unparsed-frame noise."""
+    app, ws, _ = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        ws.feed(draft_ws.Nomination(6, 25000))     # config.MY_TEAM_ID is 6
+        await app._poll()
+        await pilot.pause()
+        app.nominations.focus()
+        await pilot.press("n")
+        await pilot.pause()
+        ws.feed(draft_ws.Error(1, "The bid presented for nomination is not valid "
+                                   "(player ID 3915514, bid amount 1)."))
+        await app._poll()
+        await pilot.pause()
+        assert app.banner.display
+        assert app.banner.has_class("alert")
+        assert "Justin Jefferson" in str(app.banner.content)
+        assert "turn is still open" in str(app.banner.content)
+
+
+@pytest.mark.asyncio
+async def test_three_identical_nomination_rejections_collapse_into_one_alert(tmp_path):
+    """The 2026-08-28 rehearsal saw the same rejection three times in a row
+    and five raw 'unparsed frame' alerts stack up (one per WsError, since
+    nothing de-duped identical alerts). With a real Error parser and Banner's
+    dedupe, three identical rejections now read as one alert with a repeat
+    count, and the turn survives all three -- pressing n again still works."""
+    app, ws, _ = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        ws.feed(draft_ws.Nomination(6, 25000))
+        await app._poll()
+        await pilot.pause()
+        app.nominations.focus()
+        for _ in range(3):
+            await pilot.press("n")
+            await pilot.pause()
+            ws.feed(draft_ws.Error(1, "The bid presented for nomination is not valid "
+                                       "(player ID 3915514, bid amount 1)."))
+            await app._poll()
+            await pilot.pause()
+        assert ws.client.sent == [("NOMINATE", 3915514, 1)] * 3
+        # One collapsed entry with a x3 repeat count, not three separate
+        # alerts -- the still-queued "your turn" banner from the initial
+        # Nomination event is the only thing behind it (+1, not +2 or +3).
+        content = str(app.banner.content)
+        assert "(x3)" in content
+        assert "+1 more" in content
+
+
+@pytest.mark.asyncio
 async def test_n_refuses_when_it_is_not_your_turn(tmp_path):
     app, ws, _ = make_app(tmp_path)
     async with app.run_test() as pilot:
@@ -914,6 +967,35 @@ async def test_banner_queues_a_second_alert_instead_of_erasing_the_first(tmp_pat
 
         banner.dismiss()
         assert not banner.display
+
+
+@pytest.mark.asyncio
+async def test_banner_collapses_repeated_identical_alerts(tmp_path):
+    """T25: an alert firing several times in a row (the rejected-nomination
+    ERROR frame repro'd three times back to back, 2026-08-28) must read as
+    one entry with a repeat count, not stack the banner deep with
+    near-duplicates the way five raw unparsed-frame alerts did before."""
+    app, _, _ = make_app(tmp_path)
+    async with app.run_test():
+        banner = app.banner
+        banner.show("same alert", alert=True)
+        banner.show("same alert", alert=True)
+        banner.show("same alert", alert=True)
+        assert "(x3)" in str(banner.content)
+        assert "more" not in str(banner.content)
+        banner.dismiss()
+        assert not banner.display
+
+        # A repeat while something else is showing merges into the queued
+        # entry instead of piling up behind it as a second one.
+        banner.show("first alert", alert=True)
+        banner.show("second alert", alert=True)
+        banner.show("second alert", alert=True)
+        assert "(x2)" in str(banner.content)
+        assert "(+1 more, esc to dismiss)" in str(banner.content)
+        banner.dismiss()
+        assert "first alert" in str(banner.content)
+        assert "more" not in str(banner.content)
 
 
 @pytest.mark.asyncio

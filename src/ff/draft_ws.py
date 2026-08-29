@@ -166,6 +166,24 @@ class Nomination:
     clock_reset_ms: int
 
 
+@dataclass(frozen=True)
+class Error:
+    """A rejection aimed at this connection alone, not broadcast to the
+    room -- confirmed by three examples in one capture (2026-08-28) where
+    NOMINATE 3042519 1 (Aaron Jones Sr.) got ERROR back every time, ~13ms
+    later, with no broadcast Bid ever following. `message` arrives
+    percent-and-plus encoded on the wire (the same family as PING's
+    "PING%20<epochMs>") and is decoded here. `code` has only been observed
+    as 1. See docs/notes/ws-protocol.md and docs/notes/rehearsal-log.md --
+    why ESPN rejects a given nomination is still unconfirmed, but a
+    rejection leaves the turn exactly where a silently-ignored NOMINATE
+    would: still open, and burned if nothing else is sent before the clock
+    runs out."""
+
+    code: int
+    message: str
+
+
 # --- client-to-server frames -------------------------------------------
 # Confirmed from a DevTools HAR export of a real practice draft (2026-08-26,
 # see docs/notes/ws-protocol.md) -- captured from ESPN's own client, never
@@ -219,7 +237,7 @@ class WsError:
 
 Event = (
     Autodraft | Init | Token | Joined | Left | Pong | BidAck | DraftList | State | Clock
-    | AutoSuggest | Passed | Bid | Sold | Nomination | Ping | BidCommand | Nominate
+    | AutoSuggest | Passed | Bid | Sold | Nomination | Error | Ping | BidCommand | Nominate
     | Prenominate | AutoNomination | WsError
 )
 
@@ -293,6 +311,9 @@ def parse_frame(raw: str) -> Event:
         if kind == "NOMINATION":
             team_id, clock_reset_ms = fields
             return Nomination(int(team_id), int(clock_reset_ms))
+        if kind == "ERROR":
+            code, *rest = fields
+            return Error(int(code), urllib.parse.unquote_plus(" ".join(rest)))
         if kind == "PING":
             (payload,) = fields
             return Ping(payload)

@@ -72,6 +72,27 @@ def test_nomination_frame():
     assert event == draft_ws.Nomination(1, 25000)
 
 
+def test_error_frame():
+    raw = ("ERROR 1 The+bid+presented+for+nomination+is+not+valid+"
+           "%28player+ID+3042519%2C+bid+amount+1%29.\n")
+    event = draft_ws.parse_frame(raw)
+    assert event == draft_ws.Error(
+        1, "The bid presented for nomination is not valid (player ID 3042519, bid amount 1).")
+
+
+def test_error_frames_in_the_rejected_nomination_capture_all_parse():
+    # ws-log-1787942937.jsonl is the one capture with real ERROR frames:
+    # NOMINATE 3042519 1 (Aaron Jones Sr.) was rejected three times in the
+    # same session. See docs/notes/rehearsal-log.md.
+    path = DATA / "ws-log-1787942937.jsonl"
+    errors = [draft_ws.parse_frame(msg) for msg in draft_ws.iter_frames(path)
+              if msg.startswith("ERROR")]
+    assert len(errors) == 3
+    assert all(isinstance(e, draft_ws.Error) for e in errors)
+    assert all(e.code == 1 for e in errors)
+    assert all("player ID 3042519" in e.message for e in errors)
+
+
 def test_passed_frame():
     event = draft_ws.parse_frame("PASSED 6 3915511 false\n")
     assert event == draft_ws.Passed(6, 3915511, False)

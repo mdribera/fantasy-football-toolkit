@@ -41,13 +41,30 @@ class Banner(Static):
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
-        self._current: tuple[str, bool, bool] | None = None  # message, alert, disconnect
-        self._queue: list[tuple[str, bool, bool]] = []
+        # message, alert, disconnect, repeat count
+        self._current: tuple[str, bool, bool, int] | None = None
+        self._queue: list[tuple[str, bool, bool, int]] = []
 
     def show(self, message: str, alert: bool = False, disconnect: bool = False) -> None:
+        """Queue behind whatever's showing, unless this is an exact repeat of
+        the current alert or one already queued -- an identical alert firing
+        several times in a row (three rejected-nomination ERROR frames back
+        to back, 2026-08-28, see docs/notes/rehearsal-log.md) collapses into
+        one entry with a repeat count instead of stacking the banner deep
+        with near-duplicates."""
+        key = (message, alert, disconnect)
+        if self._current is not None and self._current[:3] == key:
+            self._current = (*key, self._current[3] + 1)
+            if self.display:
+                self._render_current()
+            return
+        for i, item in enumerate(self._queue):
+            if item[:3] == key:
+                self._queue[i] = (*key, item[3] + 1)
+                return
         if self.display and self._current is not None:
             self._queue.append(self._current)
-        self._current = (message, alert, disconnect)
+        self._current = (*key, 1)
         self.display = True
         self._render_current()
 
@@ -79,8 +96,9 @@ class Banner(Static):
             self.dismiss()
 
     def _render_current(self) -> None:
-        message, alert, _ = self._current
-        text = message + (f"  (+{len(self._queue)} more, esc to dismiss)"
+        message, alert, _, repeats = self._current
+        repeat_suffix = f"  (x{repeats})" if repeats > 1 else ""
+        text = message + repeat_suffix + (f"  (+{len(self._queue)} more, esc to dismiss)"
                           if self._queue else "  (esc to dismiss)")
         self.update(Text(text))
         self.set_class(alert, "alert")
@@ -316,6 +334,7 @@ class TextualWsApp(App):
         self._last_bid_team = ""
         self._last_bid_team_id: int | None = None
         self._pending_bid: tuple[int, int, float] | None = None
+        self._pending_nomination: tuple[int, str] | None = None
         self._init_backed_up = False  # back up draft-state.json once, before
                                        # the first INIT reconcile may prune it
         self._nomination_list_backed_up = False
@@ -479,6 +498,8 @@ class TextualWsApp(App):
                     self._flash(f"[green]SOLD[/green] {name} ${event.price} "
                                 f"-> {team}{note}")
                     self._clear_turn_alert()
+            elif isinstance(event, draft_ws.Error):
+                self._handle_nomination_error(event)
             elif isinstance(event, draft_ws.WsError):
                 self._flash(f"[yellow]unparsed frame:[/yellow] {event.raw!r} "
                             f"({event.reason})")
@@ -524,6 +545,26 @@ class TextualWsApp(App):
         if (self._pending_bid and self._pending_bid[0] == player_id
                 and team_id == config.MY_TEAM_ID and amount >= self._pending_bid[1]):
             self._pending_bid = None
+
+    def _handle_nomination_error(self, event: draft_ws.Error) -> None:
+        """A rejected NOMINATE leaves the turn exactly where a silently
+        ignored one would -- still open, and burned if nothing else is sent
+        before the clock runs out (confirmed 2026-08-28 against a real
+        rejection: the server auto-nominated and completed a real purchase
+        once the clock ran out, see docs/notes/rehearsal-log.md). No
+        auto-anything: this alerts loudly and stops there, the same
+        guarantee every other guardrail in this console makes -- Mark picks
+        the next name."""
+        if self._pending_nomination is not None:
+            _, name = self._pending_nomination
+            self._pending_nomination = None
+        else:
+            name = "your last nomination"
+        message = (f"Nomination rejected: {name} was refused by ESPN "
+                   f"({event.message}) -- your turn is still open, "
+                   "highlight a player and press n.")
+        self.banner.show(message, alert=True)
+        self._flash(f"[red]{message}[/red]")
 
     def _check_bid_watchdog(self) -> None:
         if self._pending_bid is None:
@@ -922,6 +963,7 @@ class TextualWsApp(App):
             self._flash(f"[red]Not sent:[/red] {exc} -- nominate in ESPN's own UI "
                         "if urgent.")
         else:
+            self._pending_nomination = (match.espn_id, match.name)
             self._flash(f"[green]Nominated {match.name} at $1.[/green]")
 
     def action_star(self) -> None:
