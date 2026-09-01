@@ -602,6 +602,7 @@ class TextualWsApp(App):
                    f"({event.message}) -- your turn is still open, "
                    "highlight a player and press n.")
         self.banner.show(message, alert=True)
+        self.screen.add_class("my-turn")
         self._flash(f"[red]{message}[/red]")
 
     def _check_bid_watchdog(self) -> None:
@@ -1035,6 +1036,7 @@ class TextualWsApp(App):
         else:
             self._pending_nomination = (match.espn_id, match.name)
             self._flash(f"[green]Nominated {match.name} at $1.[/green]")
+            self._clear_turn_alert()
 
     def action_star(self) -> None:
         if not self._board_rows:

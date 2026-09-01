@@ -1052,6 +1052,45 @@ async def test_nomination_rejection_alerts_with_the_player_name(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_nominating_clears_the_turn_alert_immediately(tmp_path):
+    """T48: previously the my-turn border and banner stayed lit until ESPN's
+    own Nomination broadcast echoed back, even though the console already
+    knew the turn was spoken for the moment send_nomination succeeded."""
+    app, ws, _ = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        ws.feed(draft_ws.Nomination(6, 25000))     # config.MY_TEAM_ID is 6
+        await app._poll()
+        await pilot.pause()
+        assert app.screen.has_class("my-turn")
+        app.nominations.focus()
+        await pilot.press("n")
+        await pilot.pause()
+        assert not app.screen.has_class("my-turn")
+        assert not app.banner.display
+
+
+@pytest.mark.asyncio
+async def test_a_rejected_nomination_re_raises_the_turn_border(tmp_path):
+    """A rejection leaves the turn exactly where a silently ignored one
+    would -- still open -- so the my-turn border must come back even though
+    action_nominate already cleared it optimistically on send."""
+    app, ws, _ = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        ws.feed(draft_ws.Nomination(6, 25000))
+        await app._poll()
+        await pilot.pause()
+        app.nominations.focus()
+        await pilot.press("n")
+        await pilot.pause()
+        assert not app.screen.has_class("my-turn")
+        ws.feed(draft_ws.Error(1, "The bid presented for nomination is not valid "
+                                   "(player ID 3915514, bid amount 1)."))
+        await app._poll()
+        await pilot.pause()
+        assert app.screen.has_class("my-turn")
+
+
+@pytest.mark.asyncio
 async def test_three_identical_nomination_rejections_collapse_into_one_alert(tmp_path):
     """The 2026-08-28 rehearsal saw the same rejection three times in a row
     and five raw 'unparsed frame' alerts stack up (one per WsError, since
@@ -1073,11 +1112,11 @@ async def test_three_identical_nomination_rejections_collapse_into_one_alert(tmp
             await pilot.pause()
         assert ws.client.sent == [("NOMINATE", 3915514, 1)] * 3
         # One collapsed entry with a x3 repeat count, not three separate
-        # alerts -- the still-queued "your turn" banner from the initial
-        # Nomination event is the only thing behind it (+1, not +2 or +3).
+        # alerts. Nothing is queued behind it: action_nominate clears the
+        # "your turn" banner locally the moment each nomination is sent.
         content = str(app.banner.content)
         assert "(x3)" in content
-        assert "+1 more" in content
+        assert "more" not in content
 
 
 @pytest.mark.asyncio
