@@ -222,6 +222,27 @@ class SaleLog(DataTable):
         self.add_columns("Player", "Pos", "Team", "Paid", "Edge")
 
 
+def order_teams(teams: list[str], order_ids: list[int]) -> list[str]:
+    """Reorder `teams` (as DraftState.all_teams() returns it, alphabetical)
+    to match the live nomination cycle instead. `order_ids` is the sequence
+    of ESPN team ids seen in Nomination frames this session, in first-seen
+    order -- the rotation is randomized once per draft and not stable across
+    sessions (confirmed against every captured ws-log-*.jsonl), so it has to
+    be learned live rather than hardcoded. A team keeps its first-seen slot
+    even after it drops out of the rotation (roster full, budget gone), so
+    rows never reorder mid-bid. Any team not yet seen trails in `teams`'
+    own order."""
+    seen: set[str] = set()
+    ordered = []
+    for team_id in order_ids:
+        label = config.TEAMS.get(team_id)
+        if label in teams and label not in seen:
+            ordered.append(label)
+            seen.add(label)
+    ordered.extend(team for team in teams if team not in seen)
+    return ordered
+
+
 class TeamList(DataTable):
     """Every team in the league, selectable -- highlighting a row points
     RosterPanel and RosterTable at that team instead of always showing ours.
@@ -380,6 +401,7 @@ class TextualWsApp(App):
         self.selected_team = state.my_team
         self._team_rows: list[str] = []
         self._sales_rendered: list[draft_state.Purchase] = []
+        self._nomination_order: list[int] = []
 
     def compose(self) -> ComposeResult:
         yield Banner(id="banner")
@@ -487,6 +509,8 @@ class TextualWsApp(App):
             if isinstance(event, draft_ws.Nomination):
                 team = config.TEAMS.get(event.team_id, f"TEAM{event.team_id}")
                 self._flash(f"[bold]NOMINATION[/bold] {team} is on the clock")
+                if event.team_id not in self._nomination_order:
+                    self._nomination_order.append(event.team_id)
                 if event.team_id == config.MY_TEAM_ID:
                     self._raise_turn_alert()
                 else:
@@ -734,8 +758,9 @@ class TextualWsApp(App):
     def _refresh_teams(self) -> None:
         """Rebuild the team list every refresh, same convention _reload_board
         uses for the nomination board, so the Left column stays live without
-        losing whichever team is highlighted."""
-        teams = self.state.all_teams()
+        losing whichever team is highlighted. Ordered by the live nomination
+        cycle (order_teams) rather than all_teams()'s alphabetical order."""
+        teams = order_teams(self.state.all_teams(), self._nomination_order)
         previous = self.selected_team
         self.team_list.clear()
         for team in teams:

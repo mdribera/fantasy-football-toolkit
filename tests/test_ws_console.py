@@ -969,6 +969,79 @@ async def test_team_list_left_column_reflects_each_teams_own_gradient(tmp_path):
         assert rows["ME"].style != rows["CCT"].style
 
 
+def test_order_teams_follows_the_learned_nomination_cycle():
+    teams = ["AUBREY", "CCT", "DRAKE", "FWD", "HH", "LEWE", "ME", "PITTS", "RRT", "SLAY"]
+    order_ids = [2, 5, 1, 4, 11, 3, 7, 8, 10, 6]
+    assert ws_console.order_teams(teams, order_ids) == [
+        "AUBREY", "FWD", "DRAKE", "CCT", "SLAY", "LEWE", "HH", "RRT", "PITTS", "ME",
+    ]
+
+
+def test_order_teams_trails_unseen_teams_in_their_own_order():
+    teams = ["AUBREY", "CCT", "DRAKE", "FWD", "HH", "LEWE", "ME", "PITTS", "RRT", "SLAY"]
+    order_ids = [4, 1, 2]     # only CCT, DRAKE, AUBREY have nominated so far
+    assert ws_console.order_teams(teams, order_ids) == [
+        "CCT", "DRAKE", "AUBREY",
+        "FWD", "HH", "LEWE", "ME", "PITTS", "RRT", "SLAY",
+    ]
+
+
+def test_order_teams_is_stable_across_a_repeat_lap():
+    teams = ["AUBREY", "CCT", "DRAKE"]
+    order_ids = [4, 1, 2, 4, 1, 2]     # the same cycle repeating
+    assert ws_console.order_teams(teams, order_ids) == ["CCT", "DRAKE", "AUBREY"]
+
+
+@pytest.mark.asyncio
+async def test_teams_table_follows_the_nomination_order(tmp_path):
+    """T54: all_teams() returns teams alphabetically, but the room's own
+    nomination rotation -- randomized once per draft, not team-ID or
+    alphabetical order, and not stable across sessions (confirmed against
+    every captured ws-log-*.jsonl) -- is what actually matters for reading
+    who nominates next. Learned live from fed Nomination frames."""
+    app, ws, state = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        for team_id in (2, 5, 1, 4, 11, 3, 7, 8, 10, 6):
+            ws.feed(draft_ws.Nomination(team_id, 25000))
+            await app._poll()
+            await pilot.pause()
+        assert app._team_rows == [
+            "AUBREY", "FWD", "DRAKE", "CCT", "SLAY", "LEWE", "HH", "RRT", "PITTS", "ME",
+        ]
+
+
+@pytest.mark.asyncio
+async def test_teams_table_order_does_not_reshuffle_on_a_repeat_lap(tmp_path):
+    app, ws, state = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        for team_id in (2, 5, 1):
+            ws.feed(draft_ws.Nomination(team_id, 25000))
+            await app._poll()
+            await pilot.pause()
+        first_order = list(app._team_rows[:3])
+        for team_id in (2, 5, 1):     # the same three teams nominate again
+            ws.feed(draft_ws.Nomination(team_id, 25000))
+            await app._poll()
+            await pilot.pause()
+        assert app._team_rows[:3] == first_order
+
+
+@pytest.mark.asyncio
+async def test_selected_team_survives_a_nomination_order_change(tmp_path):
+    app, ws, state = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        app._run_command("team CCT")
+        await pilot.pause()
+        ws.feed(draft_ws.Nomination(4, 25000))     # CCT nominates, learning slot 0
+        await app._poll()
+        await pilot.pause()
+        ws.feed(draft_ws.Nomination(2, 25000))     # AUBREY nominates next, reordering
+        await app._poll()
+        await pilot.pause()
+        assert app.selected_team == "CCT"
+        assert app.team_list.cursor_row == app._team_rows.index("CCT")
+
+
 @pytest.mark.asyncio
 async def test_status_guardrails_stay_on_my_team_while_scouting_another(tmp_path):
     """Max bid and the pre-bid bye-clash warning in the merged status panel
