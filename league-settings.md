@@ -17,7 +17,7 @@
 | Setting    | Value                      |
 | ---------- | -------------------------- |
 | Draft Type | Salary Cap                 |
-| Draft Date | Sep 2, 2026 @ 12:00 PM PDT |
+| Draft Date | Sep 2, 2026 @ 6:00 PM PDT  |
 | Salary Cap | 200                        |
 
 ## Roster

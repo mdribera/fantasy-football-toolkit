@@ -20,8 +20,8 @@ NUM_TEAMS = 10
 SALARY_CAP = 200
 FAAB_BUDGET = 100
 
-# Draft: Sep 2, 2026 @ 12:00 PM PDT
-DRAFT_DATE = "2026-09-02T12:00:00-07:00"
+# Draft: Sep 2, 2026 @ 6:00 PM PDT
+DRAFT_DATE = "2026-09-02T18:00:00-07:00"
 
 # Starting lineup. Note QB=2 is a true 2QB requirement, not superflex: the FLEX
 # slot accepts RB/WR/TE only, so a QB injury cannot be papered over with a RB.
