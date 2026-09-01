@@ -265,17 +265,19 @@ def test_draft_counts_pos_cell_colors_toward_the_roster_target():
     assert "30/20" in at_target and "#00ff00" in at_target
 
 
-def test_draft_counts_render_pairs_qb_rb_wr_with_te_dst_k():
+def test_draft_counts_render_puts_all_six_positions_on_one_line():
+    """T49: six stacked half-rows cost the panel three lines of height for
+    six numbers; one line fits the same information in the ~56 columns
+    #drafted's 2fr width gives it at the standard 120-col test size."""
     widget = ws_console.DraftCounts()
     widget.counts = (
         ("QB", 5, 20, 30), ("RB", 12, 20, 40), ("WR", 14, 20, 50),
         ("TE", 2, 10, 20), ("D/ST", 0, 10, 10), ("K", 0, 10, 10),
     )
     lines = str(widget.render()).split("\n")
-    assert len(lines) == 3
-    assert "QB" in lines[0] and "TE" in lines[0]
-    assert "RB" in lines[1] and "D/ST" in lines[1]
-    assert "WR" in lines[2] and "K" in lines[2]
+    assert len(lines) == 1
+    assert all(pos in lines[0] for pos in ("QB", "RB", "WR", "TE", "DST", "K"))
+    assert len(lines[0]) <= 56
 
 
 @pytest.mark.asyncio

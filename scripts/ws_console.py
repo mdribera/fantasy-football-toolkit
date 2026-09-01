@@ -177,17 +177,19 @@ class DraftCounts(Static):
 
     counts = reactive(())   # tuple[tuple[pos, drafted, demand, target], ...]
 
+    _DISPLAY_POS = {"D/ST": "DST"}   # config's key stays "D/ST"; only the
+                                      # printed label shortens to fit one line
+
     def _pos_cell(self, pos: str, drafted: int, demand: int, target: int) -> str:
         fraction = drafted / target if target else 0.0
         style = _ramp_style(fraction)
-        return f"[{style}]{pos:<4}{drafted:>3}/{demand:<3}[/{style}]"
+        label = self._DISPLAY_POS.get(pos, pos)
+        return f"[{style}]{label:<3}{drafted:>2}/{demand:<2}[/{style}]"
 
     def render(self) -> Text:
         if not self.counts:
             return Text.from_markup("[dim]No picks yet.[/dim]")
-        left, right = self.counts[:3], self.counts[3:]
-        lines = [f"{self._pos_cell(*l)}  {self._pos_cell(*r)}" for l, r in zip(left, right)]
-        return Text.from_markup("\n".join(lines))
+        return Text.from_markup(" ".join(self._pos_cell(*c) for c in self.counts))
 
 
 class BidLog(RichLog):
