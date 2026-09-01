@@ -155,6 +155,41 @@ class StatusPanel(Static):
         return Text.from_markup("\n".join(lines))
 
 
+def _ramp_style(fraction: float) -> str:
+    """Continuous red-to-green interpolation for a 0..1 completion fraction,
+    shared by TeamList's budget-left column and DraftCounts' position ramp
+    rather than each re-deriving the same two lines of color math."""
+    fraction = max(0.0, min(1.0, fraction))
+    red = round(255 * (1 - fraction))
+    green = round(255 * fraction)
+    return f"#{red:02x}{green:02x}00"
+
+
+class DraftCounts(Static):
+    """Leaguewide positional draft counts -- the same have/target read
+    RosterPanel already gives per team, summed across all ten. Printed
+    against starting-spot demand (config.WEEKLY_STARTER_DEMAND), which
+    answers "how much of the league's starting jobs are already claimed",
+    but colored on a continuous ramp toward the full roster target
+    (config.ROSTER_TARGETS x NUM_TEAMS) -- a position can clear its starting
+    demand and still be well short of where the room actually stops
+    drafting it, QB most of all."""
+
+    counts = reactive(())   # tuple[tuple[pos, drafted, demand, target], ...]
+
+    def _pos_cell(self, pos: str, drafted: int, demand: int, target: int) -> str:
+        fraction = drafted / target if target else 0.0
+        style = _ramp_style(fraction)
+        return f"[{style}]{pos:<4}{drafted:>3}/{demand:<3}[/{style}]"
+
+    def render(self) -> Text:
+        if not self.counts:
+            return Text.from_markup("[dim]No picks yet.[/dim]")
+        left, right = self.counts[:3], self.counts[3:]
+        lines = [f"{self._pos_cell(*l)}  {self._pos_cell(*r)}" for l, r in zip(left, right)]
+        return Text.from_markup("\n".join(lines))
+
+
 class BidLog(RichLog):
     """One line per Bid event, scoped to the current nomination and cleared
     when the pointer moves to a new player, plus the console's own bid
@@ -350,7 +385,9 @@ class TextualWsApp(App):
 
     def compose(self) -> ComposeResult:
         yield Banner(id="banner")
-        yield StatusPanel(id="status")
+        with Horizontal(id="now-row"):
+            yield StatusPanel(id="status")
+            yield DraftCounts(id="drafted")
         with Horizontal(id="middle"):
             yield BidLog(id="bidlog", markup=True, min_width=30, wrap=True)
             yield SaleLog(id="salelog")
@@ -369,6 +406,7 @@ class TextualWsApp(App):
     async def on_mount(self) -> None:
         self.banner = self.query_one("#banner", Banner)
         self.status = self.query_one("#status", StatusPanel)
+        self.drafted = self.query_one("#drafted", DraftCounts)
         self.bidlog = self.query_one("#bidlog", BidLog)
         self.salelog = self.query_one("#salelog", SaleLog)
         self.output = self.query_one("#output", OutputLog)
@@ -385,6 +423,7 @@ class TextualWsApp(App):
         self._update_roster_title()
         self.nominations.border_title = "Board (n nominate, space star, / search)"
         self.status.border_title = "NOW"
+        self.drafted.border_title = "DRAFTED (of starting spots)"
 
         self._reload_board()
         self._refresh_panels()
@@ -662,6 +701,15 @@ class TextualWsApp(App):
         self._refresh_roster()
         self._refresh_sales()
         self._refresh_analysis()
+        self._refresh_counts()
+
+    def _refresh_counts(self) -> None:
+        counts = self.state.position_counts()
+        self.drafted.counts = tuple(
+            (pos, counts.get(pos, 0), config.WEEKLY_STARTER_DEMAND[pos],
+             config.ROSTER_TARGETS[pos] * config.NUM_TEAMS)
+            for pos in ("QB", "RB", "WR", "TE", "D/ST", "K")
+        )
 
     def _diff_cell(self, diff: int | None) -> Text:
         """Sheet minus what was paid, colored -- positive is a bargain and
@@ -682,10 +730,7 @@ class TextualWsApp(App):
         to spend, not a threshold state, so this interpolates rather than
         bucketing into red/yellow/green the way the roster header's slot
         coloring does."""
-        fraction = max(0.0, min(1.0, budget_left / config.SALARY_CAP))
-        red = round(255 * (1 - fraction))
-        green = round(255 * fraction)
-        return Text(f"${budget_left}", style=f"#{red:02x}{green:02x}00")
+        return Text(f"${budget_left}", style=_ramp_style(budget_left / config.SALARY_CAP))
 
     def _refresh_teams(self) -> None:
         """Rebuild the team list every refresh, same convention _reload_board

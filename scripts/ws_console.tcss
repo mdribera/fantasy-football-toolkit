@@ -16,8 +16,20 @@ Screen.my-turn {
     background: $error;
 }
 
-#status {
+#now-row {
     height: 10;
+}
+
+#status {
+    width: 2fr;
+    height: 1fr;
+    border: round $primary;
+    padding: 0 1;
+}
+
+#drafted {
+    width: 2fr;
+    height: 1fr;
     border: round $primary;
     padding: 0 1;
 }

@@ -172,10 +172,25 @@ async def test_nominations_has_a_minimum_height_floor(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_drafted_pane_left_border_aligns_with_the_roster_box(tmp_path):
+    """T46: DRAFTED mirrors #middle's bidlog+salelog-vs-roster split (2fr and
+    2fr), so its left border lands on the Teams/Roster box below it --
+    checked by region rather than by eye, and at a wider-than-80 terminal
+    since fr splits can round differently as available width changes."""
+    app, _, _ = make_app(tmp_path)
+    async with app.run_test(size=(120, 40)) as pilot:
+        await pilot.pause()
+        drafted = app.query_one("#drafted")
+        roster = app.query_one("#roster")
+        assert drafted.region.x == roster.region.x
+
+
+@pytest.mark.asyncio
 async def test_app_mounts_every_panel(tmp_path):
     app, _, _ = make_app(tmp_path)
     async with app.run_test():
         assert app.query_one("#status", ws_console.StatusPanel)
+        assert app.query_one("#drafted", ws_console.DraftCounts)
         assert app.query_one("#bidlog", ws_console.BidLog)
         assert app.query_one("#salelog", ws_console.SaleLog)
         assert app.query_one("#output", ws_console.OutputLog)
@@ -234,6 +249,61 @@ def test_status_panel_breaks_after_the_name_and_reverses_high_and_clock():
     plain = str(text)
     clock_styles = [style for start, end, style in text.spans if "5s" in plain[start:end]]
     assert any("reverse" in style and "red" in style for style in clock_styles)
+
+
+def test_draft_counts_pos_cell_colors_toward_the_roster_target():
+    """T46: the printed fraction (drafted/demand) and the color fraction
+    (drafted/target) are deliberately different denominators -- a position
+    can clear its starting demand and still read yellow, not green, if the
+    room typically drafts well past it."""
+    widget = ws_console.DraftCounts()
+    empty = widget._pos_cell("QB", 0, 20, 30)
+    at_demand = widget._pos_cell("QB", 20, 20, 30)
+    at_target = widget._pos_cell("QB", 30, 20, 30)
+    assert "0/20" in empty and "#ff0000" in empty
+    assert "20/20" in at_demand and "#ff0000" not in at_demand and "#00ff00" not in at_demand
+    assert "30/20" in at_target and "#00ff00" in at_target
+
+
+def test_draft_counts_render_pairs_qb_rb_wr_with_te_dst_k():
+    widget = ws_console.DraftCounts()
+    widget.counts = (
+        ("QB", 5, 20, 30), ("RB", 12, 20, 40), ("WR", 14, 20, 50),
+        ("TE", 2, 10, 20), ("D/ST", 0, 10, 10), ("K", 0, 10, 10),
+    )
+    lines = str(widget.render()).split("\n")
+    assert len(lines) == 3
+    assert "QB" in lines[0] and "TE" in lines[0]
+    assert "RB" in lines[1] and "D/ST" in lines[1]
+    assert "WR" in lines[2] and "K" in lines[2]
+
+
+@pytest.mark.asyncio
+async def test_draft_counts_sums_across_the_whole_league(tmp_path):
+    """The DRAFTED panel is a leaguewide sum, not just our own roster --
+    confirmed against two teams' picks at the same position."""
+    app, ws, state = make_app(tmp_path)
+    state.record("Josh Allen", "QB", 60, "ME")
+    state.record("Lamar Jackson", "QB", 40, "CCT")
+    state.record("Bijan Robinson", "RB", 43, "CCT")
+    async with app.run_test() as pilot:
+        app._refresh_panels()
+        await pilot.pause()
+    counts = {pos: drafted for pos, drafted, demand, target in app.drafted.counts}
+    assert counts["QB"] == 2
+    assert counts["RB"] == 1
+    assert counts["WR"] == 0
+
+
+@pytest.mark.asyncio
+async def test_draft_counts_denominators_match_starter_demand_and_roster_targets(tmp_path):
+    app, _, _ = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        app._refresh_panels()
+        await pilot.pause()
+    by_pos = {pos: (demand, target) for pos, drafted, demand, target in app.drafted.counts}
+    assert by_pos["QB"] == (20, 30)
+    assert by_pos["TE"] == (10, 20)
 
 
 @pytest.mark.asyncio

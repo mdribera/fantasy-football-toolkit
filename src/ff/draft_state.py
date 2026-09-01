@@ -249,10 +249,11 @@ class DraftState:
     def taken(self) -> set[str]:
         return {p.player for p in self.purchases}
 
-    def position_counts(self, team: str) -> dict[str, int]:
+    def position_counts(self, team: str | None = None) -> dict[str, int]:
+        """Positions drafted by `team`, or leaguewide when team is None."""
         counts: dict[str, int] = {}
         for p in self.purchases:
-            if p.team == team:
+            if team is None or p.team == team:
                 counts[p.position] = counts.get(p.position, 0) + 1
         return counts
 
