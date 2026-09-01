@@ -332,6 +332,26 @@ async def test_sale_log_survives_an_init_reconcile(tmp_path):
     assert ("Bijan Robinson", "RB", "ME", "$54", "-11") in _sale_rows(app)
 
 
+@pytest.mark.asyncio
+async def test_sale_log_stays_pinned_to_the_bottom_on_a_non_sale_refresh(tmp_path):
+    """T45: DataTable.clear() resets scroll to the top on every rebuild, and
+    _refresh_sales rebuilds on every _drain() -- not just the ones that add a
+    sale. A live Clock frame arriving between sales must not snap the log
+    back to row 0."""
+    app, ws, state = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        for i in range(20):
+            state.record_pick(f"Mystery Player {i}", "K", 1, "HH", espn_pick_id=i)
+        app._refresh_panels()
+        await pilot.pause()
+        ws.feed(draft_ws.Clock(state=2, remaining_ms=5000, high_bid_team=1,
+                                player_id=999, high_bid_amount=5))
+        await app._poll()
+        await pilot.pause()
+    assert app.salelog.scroll_y == app.salelog.max_scroll_y
+    assert app.salelog.max_scroll_y > 0
+
+
 def _build_init_blob(league_id: int, sales: dict[int, tuple[int, int, int]]) -> str:
     """pick_number -> (team_id, player_id, price); unlisted picks are unsold.
     Duplicated from tests/test_draft_ws_parser.py's builder, which is the one

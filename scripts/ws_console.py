@@ -378,7 +378,6 @@ class TextualWsApp(App):
         self.roster_table = self.query_one("#roster-table", RosterTable)
         self.nominations = self.query_one("#nominations", NominationTable)
         self.command = self.query_one("#command", Input)
-        self._sales_shown = 0
 
         self.bidlog.border_title = "Bid log (this nomination)"
         self.salelog.border_title = "Sale log"
@@ -770,7 +769,10 @@ class TextualWsApp(App):
         """Rebuild from state.purchases every refresh, the same convention
         _refresh_roster and _refresh_teams already use -- correct after a
         reconcile that rewrites purchases wholesale, not just after an
-        appended Sold event."""
+        appended Sold event. DataTable.clear() resets scroll to the top, so
+        every rebuild -- not just the ones that add a sale -- has to re-pin
+        the bottom, or a live Bid/Clock frame arriving between sales snaps
+        the log back to row 0."""
         self.salelog.clear()
         for p in self.state.purchases:
             match = self.lookup.get(p.player.lower())
@@ -778,10 +780,7 @@ class TextualWsApp(App):
                 p.player, p.position, p.team, f"${p.price}",
                 self._diff_cell(match.value - p.price) if match else Text("-", style="dim"),
             )
-        grew = len(self.state.purchases) > self._sales_shown
-        self._sales_shown = len(self.state.purchases)
-        if grew:
-            self.salelog.scroll_end(animate=False)
+        self.salelog.scroll_end(animate=False)
 
     def _refresh_analysis(self) -> None:
         pointer = self.ws.pointer
