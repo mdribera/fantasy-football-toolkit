@@ -1043,6 +1043,47 @@ async def test_selected_team_survives_a_nomination_order_change(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_teams_table_marks_the_on_clock_team(tmp_path):
+    """T55: nothing on TeamList marked whose turn it is to nominate --
+    self.ws.pointer.nominating_team was only ever compared against
+    config.MY_TEAM_ID. Reverse video is a distinct marker from bold (which
+    already means "this is my team"), since a team can be both at once."""
+    app, ws, state = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        ws.feed(draft_ws.Nomination(4, 25000))     # CCT on the clock
+        await app._poll()
+        await pilot.pause()
+        styles = {app.team_list.get_row_at(i)[0].plain: app.team_list.get_row_at(i)[0].style
+                  for i in range(app.team_list.row_count)}
+        assert "reverse" in styles["CCT"]
+        assert all("reverse" not in style for team, style in styles.items() if team != "CCT")
+
+
+@pytest.mark.asyncio
+async def test_teams_table_composes_bold_and_reverse_for_our_own_turn(tmp_path):
+    app, ws, state = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        ws.feed(draft_ws.Nomination(6, 25000))     # config.MY_TEAM_ID is 6
+        await app._poll()
+        await pilot.pause()
+        style = next(app.team_list.get_row_at(i)[0].style
+                     for i in range(app.team_list.row_count)
+                     if app.team_list.get_row_at(i)[0].plain == "ME")
+        assert "reverse" in style
+        assert "bold" in style
+
+
+@pytest.mark.asyncio
+async def test_teams_table_marks_no_one_before_any_nomination(tmp_path):
+    app, ws, state = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        app._refresh_panels()
+        await pilot.pause()
+        styles = [app.team_list.get_row_at(i)[0].style for i in range(app.team_list.row_count)]
+        assert all("reverse" not in style for style in styles)
+
+
+@pytest.mark.asyncio
 async def test_status_guardrails_stay_on_my_team_while_scouting_another(tmp_path):
     """Max bid and the pre-bid bye-clash warning in the merged status panel
     are guardrails about MY roster -- they must not follow the roster

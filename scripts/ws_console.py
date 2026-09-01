@@ -759,12 +759,19 @@ class TextualWsApp(App):
         """Rebuild the team list every refresh, same convention _reload_board
         uses for the nomination board, so the Left column stays live without
         losing whichever team is highlighted. Ordered by the live nomination
-        cycle (order_teams) rather than all_teams()'s alphabetical order."""
+        cycle (order_teams) rather than all_teams()'s alphabetical order.
+        Bold marks our own team; reverse video marks whoever is on the
+        clock -- a distinct marker rather than reusing bold, since a team
+        can be both at once."""
         teams = order_teams(self.state.all_teams(), self._nomination_order)
         previous = self.selected_team
+        on_clock = config.TEAMS.get(self.ws.pointer.nominating_team)
         self.team_list.clear()
         for team in teams:
-            label = Text(team, style="bold" if team == self.state.my_team else "")
+            style = "bold" if team == self.state.my_team else ""
+            if team == on_clock:
+                style = f"{style} reverse".strip()
+            label = Text(team, style=style)
             self.team_list.add_row(label, self._left_cell(self.state.budget_left(team)))
         self._team_rows = teams
         if not teams:
