@@ -287,6 +287,29 @@ def test_nomination_board_availability_is_case_insensitive():
     assert "Josh Allen" not in [r.name for r in rows]
 
 
+def test_nomination_board_sold_off_is_the_default():
+    state = _board_state(["Josh Allen"])
+    rows = auction.nomination_board(BIG_BOARD, state, inflation=1.0)
+    assert "Josh Allen" not in [r.name for r in rows]
+
+
+def test_nomination_board_sold_on_includes_drafted_players_with_their_owner():
+    state = _board_state(["Josh Allen"])
+    rows = auction.nomination_board(BIG_BOARD, state, inflation=1.0, sold="on")
+    assert {r.name for r in rows} == {v.name for v in BIG_BOARD}
+    allen = next(r for r in rows if r.name == "Josh Allen")
+    assert allen.owner == "ME"
+    lamar = next(r for r in rows if r.name == "Lamar Jackson")
+    assert lamar.owner is None
+
+
+def test_nomination_board_sold_only_shows_just_drafted_players():
+    state = _board_state(["Josh Allen"])
+    rows = auction.nomination_board(BIG_BOARD, state, inflation=1.0, sold="only")
+    assert [r.name for r in rows] == ["Josh Allen"]
+    assert rows[0].owner == "ME"
+
+
 def test_nomination_board_applies_inflation_to_adjusted():
     state = _board_state()
     rows = auction.nomination_board(BIG_BOARD, state, inflation=1.5)

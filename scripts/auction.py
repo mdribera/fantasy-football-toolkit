@@ -498,6 +498,9 @@ class BoardRow:
     adjusted: int | None    # None: no market read at this player's position
     edge: int | None        # sheet value minus adjusted value; positive = bargain
     starred: bool
+    owner: str | None = None   # the fantasy team that drafted this player,
+                                # set only when nomination_board's sold filter
+                                # includes drafted rows
 
     @property
     def name(self) -> str:
@@ -517,6 +520,7 @@ def nomination_board(
     position: str | None = None,
     starred_only: bool = False,
     sort: str = "rank",
+    sold: str = "off",
 ) -> list[BoardRow]:
     """The full available board: every undrafted priced player, ready to
     search, filter and sort. `inflation` is taken as a parameter rather than
@@ -528,14 +532,23 @@ def nomination_board(
     (not enough sales at that position yet to tilt it). Either can be None
     -- no read available -- in which case the affected rows' adjusted/edge
     are None too.
+
+    `sold` controls whether drafted players appear at all: "off" (default)
+    hides them, matching every caller before this parameter existed; "on"
+    includes them alongside the available pool; "only" shows nothing else.
+    A drafted row's `owner` is set to the fantasy team that bought it.
     """
     taken = {name.lower() for name in state.taken()}
+    owners = {p.player.lower(): p.team for p in state.purchases}
     starred_lower = {name.lower() for name in starred}
     overall = state.forward_inflation(vals) if isinstance(inflation, dict) else inflation
 
     rows = []
     for v in vals:
-        if v.name.lower() in taken:
+        is_taken = v.name.lower() in taken
+        if sold == "off" and is_taken:
+            continue
+        if sold == "only" and not is_taken:
             continue
         if query and query.lower() not in v.name.lower():
             continue
@@ -556,6 +569,7 @@ def nomination_board(
             adjusted=adjusted,
             edge=(v.value - adjusted) if adjusted is not None else None,
             starred=is_starred,
+            owner=owners.get(v.name.lower()) if is_taken else None,
         ))
 
     key_funcs = {

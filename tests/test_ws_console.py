@@ -1765,6 +1765,88 @@ async def test_clear_command_resets_every_filter(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_sold_command_toggles_drafted_players_on_the_board(tmp_path):
+    """T50: the Board hides drafted players entirely by default -- :sold on
+    adds them back in (with who bought them), :sold off returns to the
+    available-only default."""
+    app, ws, state = make_app(tmp_path)
+    state.record("Bijan Robinson", "RB", 43, "CCT")
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        assert "Bijan Robinson" not in [r.name for r in app._board_rows]
+        app._run_command("sold on")
+        await pilot.pause()
+        row = next(r for r in app._board_rows if r.name == "Bijan Robinson")
+        assert row.owner == "CCT"
+        app._run_command("sold off")
+        await pilot.pause()
+        assert "Bijan Robinson" not in [r.name for r in app._board_rows]
+
+
+@pytest.mark.asyncio
+async def test_sold_only_shows_just_drafted_players(tmp_path):
+    app, ws, state = make_app(tmp_path)
+    state.record("Bijan Robinson", "RB", 43, "CCT")
+    async with app.run_test() as pilot:
+        app._run_command("sold only")
+        await pilot.pause()
+        assert [r.name for r in app._board_rows] == ["Bijan Robinson"]
+
+
+@pytest.mark.asyncio
+async def test_sold_command_rejects_an_unknown_mode(tmp_path):
+    app, ws, _ = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        app._run_command("sold nonsense")
+        await pilot.pause()
+        assert any("Unknown sold mode" in str(line) for line in app.output.lines)
+
+
+@pytest.mark.asyncio
+async def test_clear_command_also_resets_the_sold_filter(tmp_path):
+    app, ws, state = make_app(tmp_path)
+    state.record("Bijan Robinson", "RB", 43, "CCT")
+    async with app.run_test() as pilot:
+        app._run_command("sold on")
+        await pilot.pause()
+        assert "Bijan Robinson" in [r.name for r in app._board_rows]
+        app._run_command("clear")
+        await pilot.pause()
+        assert "Bijan Robinson" not in [r.name for r in app._board_rows]
+
+
+@pytest.mark.asyncio
+async def test_drafted_board_row_is_dimmed_with_owner_in_need_cell(tmp_path):
+    app, ws, state = make_app(tmp_path)
+    state.record("Bijan Robinson", "RB", 43, "CCT")
+    async with app.run_test() as pilot:
+        app._run_command("sold on")
+        await pilot.pause()
+        row = next(r for r in app._board_rows if r.name == "Bijan Robinson")
+        cells = app._board_cells(row, {}, {})
+    assert str(cells[4]) == "CCT"          # Need column shows the owner
+    assert all(c.style == "dim" for c in cells if str(c))
+
+
+@pytest.mark.asyncio
+async def test_nominate_refuses_an_already_drafted_board_row(tmp_path):
+    app, ws, state = make_app(tmp_path)
+    state.record("Bijan Robinson", "RB", 43, "CCT")
+    async with app.run_test() as pilot:
+        ws.feed(draft_ws.Nomination(6, 25000))     # config.MY_TEAM_ID is 6
+        await app._poll()
+        await pilot.pause()
+        app._run_command("sold on")
+        await pilot.pause()
+        cursor = [r.name for r in app._board_rows].index("Bijan Robinson")
+        app.nominations.move_cursor(row=cursor)
+        app.nominations.focus()
+        await pilot.press("n")
+        await pilot.pause()
+    assert ws.client.sent == []
+
+
+@pytest.mark.asyncio
 async def test_space_stars_the_highlighted_row_and_saves_it(tmp_path):
     list_path = tmp_path / "nomination-list.txt"
     app, _, _ = make_app(tmp_path, nomination_list=(), nomination_list_path=list_path)

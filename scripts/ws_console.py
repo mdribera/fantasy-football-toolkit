@@ -400,6 +400,7 @@ class TextualWsApp(App):
         self._board_position: str | None = None
         self._board_starred_only = False
         self._board_sort = "rank"
+        self._board_sold = "off"
         self.selected_team = state.my_team
         self._team_rows: list[str] = []
         self._sales_rendered: list[draft_state.Purchase] = []
@@ -1003,7 +1004,7 @@ class TextualWsApp(App):
             self.vals, self.state, inflation,
             starred=self.starred, query=self._board_query,
             position=self._board_position, starred_only=self._board_starred_only,
-            sort=self._board_sort,
+            sort=self._board_sort, sold=self._board_sold,
         )
 
         needs = self.state.needs(self.state.my_team)
@@ -1038,12 +1039,16 @@ class TextualWsApp(App):
                      else "red" if row.edge and row.edge < 0 else "dim")
         edge_cell = (Text.from_markup(f"[{edge_style}]{row.edge:+d}[/{edge_style}]")
                     if row.edge is not None else Text("-", style="dim"))
-        return (
+        # The Need marker is meaningless once a player is drafted, so a
+        # drafted row (row.owner set, only possible with :sold on/only)
+        # shows who bought him there instead.
+        need_cell = row.owner if row.owner else self._need_marker(v.position, needs, targets)
+        cells = (
             "*" if row.starred else "",
             v.name,
             v.position,
             v.pro_team,
-            self._need_marker(v.position, needs, targets),
+            need_cell,
             f"T{v.tier}",
             str(v.bye) if v.bye else "-",
             f"{v.projected_points:.0f}",
@@ -1052,6 +1057,10 @@ class TextualWsApp(App):
             f"${v.espn_avg:.0f}" if v.espn_avg is not None else "-",
             edge_cell,
         )
+        if row.owner:
+            return tuple(Text(c.plain if isinstance(c, Text) else str(c), style="dim")
+                        for c in cells)
+        return cells
 
     def action_nominate(self) -> None:
         if self.ws.pointer.nominating_team != config.MY_TEAM_ID:
@@ -1060,7 +1069,12 @@ class TextualWsApp(App):
         if not self._board_rows:
             self._flash("[yellow]Nothing highlighted to nominate.[/yellow]")
             return
-        match = self._board_rows[self.nominations.cursor_row].valuation
+        row = self._board_rows[self.nominations.cursor_row]
+        if row.owner:
+            self._flash(f"[yellow]{row.name} is already drafted (owned by "
+                        f"{row.owner}).[/yellow]")
+            return
+        match = row.valuation
         if match.espn_id is None:
             self._flash(f"[red]Unknown or unresolvable player: {match.name}[/red]")
             return
@@ -1195,10 +1209,24 @@ class TextualWsApp(App):
             self._reload_board()
             self._output("Showing starred only." if self._board_starred_only
                         else "Showing the full board.", clear=False)
+        elif head == "sold":
+            arg = cmd[1].lower() if len(cmd) > 1 else "on"
+            if arg not in ("on", "off", "only"):
+                self._output("[yellow]Unknown sold mode. Use: on, off, only[/yellow]",
+                            clear=False)
+            else:
+                self._board_sold = arg
+                self._reload_board()
+                self._output({
+                    "on": "Showing available and drafted players.",
+                    "off": "Showing available players only.",
+                    "only": "Showing drafted players only.",
+                }[arg], clear=False)
         elif head == "clear":
             self._board_query = None
             self._board_position = None
             self._board_starred_only = False
+            self._board_sold = "off"
             self._reload_board()
             self._output("Filters cleared.", clear=False)
         elif head == "b":
@@ -1228,7 +1256,7 @@ class TextualWsApp(App):
             self._output(auction.best_table(self.state, self.vals, pos, limit))
         else:
             self._output("[yellow]Unrecognized.[/yellow] Use: /name, pos, sort, star, "
-                        "clear, team, b/market/teams/best/need/me/quit", clear=False)
+                        "sold, clear, team, b/market/teams/best/need/me/quit", clear=False)
 
 
 def run_ws_console(ws, state: draft_state.DraftState,
