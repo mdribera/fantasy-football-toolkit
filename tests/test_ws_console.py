@@ -566,7 +566,7 @@ async def test_init_backfill_refreshes_the_roster_panel(tmp_path):
         await app._poll()
         await pilot.pause()
         assert app.roster.budget_left == 146
-        assert ("Bijan Robinson", "RB", "T2", "-", "$54", "300", "$43", "-11") in _roster_rows(app)
+        assert ("Bijan Robinson", "RB", "ATL", "T2", "-", "$54", "300", "$43", "-11") in _roster_rows(app)
 
 
 @pytest.mark.asyncio
@@ -682,7 +682,7 @@ async def test_roster_panel_tracks_budget_and_slots(tmp_path):
         await pilot.pause()
         assert app.roster.budget_left == 148
         assert app.roster.spots_left == 15
-        assert ("Justin Jefferson", "WR", "T1", "-", "$52", "310", "$52", "+0") in _roster_rows(app)
+        assert ("Justin Jefferson", "WR", "MIN", "T1", "-", "$52", "310", "$52", "+0") in _roster_rows(app)
         assert ("WR", 1, 2, 5) in app.roster.slots
         assert ("QB", 0, 2, 3) in app.roster.slots
 
@@ -708,8 +708,8 @@ async def test_roster_table_keeps_every_player_as_the_roster_grows(tmp_path):
             await pilot.pause()
         rows = _roster_rows(app)
         assert len(rows) == 4
-        assert ("Amon-Ra St. Brown", "WR", "-", "-", "$46", "-", "-", "-") in rows
-        assert ("Justin Jefferson", "WR", "T1", "-", "$36", "310", "$52", "+16") in rows
+        assert ("Amon-Ra St. Brown", "WR", "-", "-", "-", "$46", "-", "-", "-") in rows
+        assert ("Justin Jefferson", "WR", "MIN", "T1", "-", "$36", "310", "$52", "+16") in rows
 
 
 @pytest.mark.asyncio
@@ -905,7 +905,7 @@ async def test_selecting_another_team_repoints_the_roster(tmp_path):
         app.team_list.move_cursor(row=app._team_rows.index("CCT"))
         await pilot.pause()
         assert app.selected_team == "CCT"
-        assert ("Bijan Robinson", "RB", "T2", "-", "$43", "300", "$43", "+0") in _roster_rows(app)
+        assert ("Bijan Robinson", "RB", "ATL", "T2", "-", "$43", "300", "$43", "+0") in _roster_rows(app)
         assert app.roster.budget_left == state.budget_left("CCT")
 
 
@@ -2090,6 +2090,36 @@ async def test_board_rows_carry_tier_and_adjusted_value(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_board_nfl_column_shows_the_pro_team(tmp_path):
+    """T51: NominationTable carries an NFL column now, distinct from
+    SaleLog's existing fantasy-team Team column."""
+    app, ws, state = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        app._reload_board()
+        await pilot.pause()
+        row = app._board_rows[0]         # Justin Jefferson: starred, MIN
+        cells = app._board_cells(row, {}, {})
+    assert row.name == "Justin Jefferson"
+    assert cells[3] == "MIN"
+
+
+@pytest.mark.asyncio
+async def test_roster_nfl_column_shows_the_pro_team_or_a_dash(tmp_path):
+    """A drafted player with no matching Valuation (cut, renamed, a typo)
+    has no pro_team to show, same fallback RosterTable's other columns
+    already use."""
+    app, ws, state = make_app(tmp_path)
+    state.record("Justin Jefferson", "WR", 52, "ME")
+    state.record("Undrafted Kicker", "K", 1, "ME")
+    async with app.run_test() as pilot:
+        app._refresh_panels()
+        await pilot.pause()
+    rows = _roster_rows(app)
+    assert ("Justin Jefferson", "WR", "MIN", "T1", "-", "$52", "310", "$52", "+0") in rows
+    assert any(row[0] == "Undrafted Kicker" and row[2] == "-" for row in rows)
+
+
+@pytest.mark.asyncio
 async def test_board_rows_show_dash_when_forward_inflation_is_none(tmp_path):
     """T36a: no per-position read at all (forward_inflation is None) must
     fall through to the '-' cell rendering, not crash on `value * None`."""
@@ -2102,8 +2132,8 @@ async def test_board_rows_show_dash_when_forward_inflation_is_none(tmp_path):
         cells = app._board_cells(row, {}, {})
     assert row.adjusted is None
     assert row.edge is None
-    assert cells[8] == "-"               # Adj column
-    assert str(cells[10]) == "-"         # Edge column
+    assert cells[9] == "-"               # Adj column
+    assert str(cells[11]) == "-"         # Edge column
 
 
 @pytest.mark.asyncio

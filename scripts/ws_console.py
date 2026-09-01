@@ -310,7 +310,7 @@ class RosterTable(DataTable):
 
     def on_mount(self) -> None:
         self.cursor_type = "none"
-        self.add_columns("Player", "Pos", "Tier", "Bye", "Paid", "Proj", "Sheet", "Value")
+        self.add_columns("Player", "Pos", "NFL", "Tier", "Bye", "Paid", "Proj", "Sheet", "Value")
 
 
 class NominationTable(DataTable):
@@ -322,7 +322,7 @@ class NominationTable(DataTable):
 
     def on_mount(self) -> None:
         self.cursor_type = "row"
-        self.add_columns("*", "Player", "Pos", "Need", "Tier", "Bye", "Proj", "Sheet", "Adj", "ESPN", "Edge")
+        self.add_columns("*", "Player", "Pos", "NFL", "Need", "Tier", "Bye", "Proj", "Sheet", "Adj", "ESPN", "Edge")
 
 
 class ConfirmBidScreen(ModalScreen[bool]):
@@ -835,6 +835,7 @@ class TextualWsApp(App):
             match = self.lookup.get(p.player.lower())
             self.roster_table.add_row(
                 p.player, p.position,
+                match.pro_team if match else "-",
                 f"T{match.tier}" if match else "-",
                 str(match.bye) if match and match.bye else "-",
                 f"${p.price}",
@@ -1041,6 +1042,7 @@ class TextualWsApp(App):
             "*" if row.starred else "",
             v.name,
             v.position,
+            v.pro_team,
             self._need_marker(v.position, needs, targets),
             f"T{v.tier}",
             str(v.bye) if v.bye else "-",
