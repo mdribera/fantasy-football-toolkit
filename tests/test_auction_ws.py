@@ -74,57 +74,57 @@ def test_clock_milestone_announces_each_threshold_once():
 
 
 def test_evaluate_bid_no_amount_bids_high_plus_one():
-    plan = auction.evaluate_bid([], current_high=40, my_max_bid=100, adjusted_value=45)
+    plan = auction.evaluate_bid([], current_high=40, my_max_bid=100, sheet_value=45)
     assert plan == auction.BidReady(41)
 
 
 def test_evaluate_bid_explicit_amount():
-    plan = auction.evaluate_bid(["45"], current_high=40, my_max_bid=100, adjusted_value=45)
+    plan = auction.evaluate_bid(["45"], current_high=40, my_max_bid=100, sheet_value=45)
     assert plan == auction.BidReady(45)
 
 
 def test_evaluate_bid_refuses_non_numeric():
-    plan = auction.evaluate_bid(["forty"], current_high=40, my_max_bid=100, adjusted_value=45)
+    plan = auction.evaluate_bid(["forty"], current_high=40, my_max_bid=100, sheet_value=45)
     assert isinstance(plan, auction.BidRefused)
 
 
 def test_evaluate_bid_refuses_at_or_below_current_high():
-    plan = auction.evaluate_bid(["40"], current_high=40, my_max_bid=100, adjusted_value=45)
+    plan = auction.evaluate_bid(["40"], current_high=40, my_max_bid=100, sheet_value=45)
     assert isinstance(plan, auction.BidRefused)
 
 
 def test_evaluate_bid_refuses_above_max_bid():
-    plan = auction.evaluate_bid(["101"], current_high=40, my_max_bid=100, adjusted_value=200)
+    plan = auction.evaluate_bid(["101"], current_high=40, my_max_bid=100, sheet_value=200)
     assert isinstance(plan, auction.BidRefused)
 
 
 def test_evaluate_bid_confirms_big_jump_over_current_high():
-    plan = auction.evaluate_bid(["55"], current_high=40, my_max_bid=100, adjusted_value=200)
+    plan = auction.evaluate_bid(["55"], current_high=40, my_max_bid=100, sheet_value=200)
     assert isinstance(plan, auction.BidNeedsConfirmation)
     assert plan.amount == 55
 
 
 def test_evaluate_bid_confirms_far_over_sheet_value():
-    plan = auction.evaluate_bid(["46"], current_high=40, my_max_bid=100, adjusted_value=20)
+    plan = auction.evaluate_bid(["46"], current_high=40, my_max_bid=100, sheet_value=20)
     assert isinstance(plan, auction.BidNeedsConfirmation)
 
 
 def test_evaluate_bid_ready_when_small_jump_and_near_sheet():
-    plan = auction.evaluate_bid(["41"], current_high=40, my_max_bid=100, adjusted_value=45)
+    plan = auction.evaluate_bid(["41"], current_high=40, my_max_bid=100, sheet_value=45)
     assert plan == auction.BidReady(41)
 
 
 def test_evaluate_bid_ready_at_exact_jump_boundary():
     # jump == TYPO_GUARD_JUMP exactly ($10): only "more than" $10 should confirm.
-    plan = auction.evaluate_bid(["50"], current_high=40, my_max_bid=100, adjusted_value=None)
+    plan = auction.evaluate_bid(["50"], current_high=40, my_max_bid=100, sheet_value=None)
     assert plan == auction.BidReady(50)
 
 
 def test_evaluate_bid_ready_at_exact_sheet_multiple_boundary():
-    # amount == adjusted_value * TYPO_GUARD_SHEET_MULTIPLE exactly (1.5x): only
+    # amount == sheet_value * TYPO_GUARD_SHEET_MULTIPLE exactly (1.5x): only
     # "exceeds" should confirm. Keep the jump small so only the sheet-multiple
     # check is in play.
-    plan = auction.evaluate_bid(["30"], current_high=25, my_max_bid=100, adjusted_value=20)
+    plan = auction.evaluate_bid(["30"], current_high=25, my_max_bid=100, sheet_value=20)
     assert plan == auction.BidReady(30)
 
 

@@ -330,6 +330,29 @@ async def test_status_shows_sheet_and_inflation_adjusted_value(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_status_verdict_reads_sheet_not_adjusted_when_they_diverge(tmp_path):
+    """T47: the verdict is deliberately not the same read as the Adjusted
+    field on the same line -- this room's own front-loaded early pace
+    drives Adjusted broadly negative for reasons that have nothing to do
+    with the player on the clock (docs/auction-strategy.md), so the
+    verdict must not gate on it. _stub_closed_league alone can't catch a
+    regression here: with nothing sold, inflation is exactly 1.0 and Sheet
+    and Adjusted are identical, so every other verdict test above would
+    keep passing whether or not this landed."""
+    app, ws, state = make_app(tmp_path)
+    _stub_closed_league(state, app.vals)
+    state.forward_inflation_by_position = lambda vals: {"RB": 2.0}   # type: ignore[method-assign]
+    async with app.run_test() as pilot:
+        ws.feed(draft_ws.Bid(4, 3915511, 50, 25000, 12731))  # sheet $43, adjusted $86
+        await app._poll()
+        await pilot.pause()
+        assert app.status.sheet_value == 43
+        assert app.status.adjusted_value == 86
+        assert "pricey" in app.status.verdict_line
+        assert "by +$7 at $50" in app.status.verdict_line
+
+
+@pytest.mark.asyncio
 async def test_sold_records_the_purchase_once(tmp_path):
     app, ws, state = make_app(tmp_path)
     async with app.run_test() as pilot:
@@ -643,7 +666,7 @@ async def test_status_verdict_reflects_the_current_high(tmp_path):
 
 @pytest.mark.asyncio
 async def test_status_verdict_shows_the_dollar_diff(tmp_path):
-    """T28: the verdict line names the gap between the bid and Adjusted, not
+    """T28: the verdict line names the gap between the bid and Sheet, not
     just a label -- "pricey" alone doesn't say by how much."""
     app, ws, state = make_app(tmp_path)
     _stub_closed_league(state, app.vals)
@@ -671,12 +694,14 @@ async def test_status_verdict_diff_is_negative_for_a_good_value_read(tmp_path):
 async def test_status_shows_no_read_when_forward_inflation_is_none(tmp_path):
     """T36a: the endgame money-dump case -- zero sheet-value surplus left
     but real cash still in the room. Adjusted/Edge must render as '-'
-    rather than crash on `value * None`, and the verdict line reads
-    "no read" instead of misjudging the bid as an overpay."""
+    rather than crash on `value * None`. T47: the verdict itself keeps
+    reading off Sheet regardless -- exactly the phase where a room dumping
+    cash makes Adjusted unreadable is when a live bid/pass read matters
+    most, so the verdict must not go blank along with Adjusted."""
     app, ws, state = make_app(tmp_path)
     _stub_no_read(state)
     async with app.run_test() as pilot:
-        ws.feed(draft_ws.Bid(4, 3915511, 54, 25000, 12731))
+        ws.feed(draft_ws.Bid(4, 3915511, 54, 25000, 12731))  # sheet $43
         await app._poll()
         await pilot.pause()
         assert app.status.adjusted_value is None
@@ -684,10 +709,8 @@ async def test_status_shows_no_read_when_forward_inflation_is_none(tmp_path):
         rendered = str(app.status.render())
         assert "Adjusted -" in rendered
         assert "Edge -" in rendered
-        assert "no read" in app.status.verdict_line
-        # T28: no adjusted value means no diff to report and nothing to
-        # measure the bid against, so the line stops at the label.
-        assert app.status.verdict_line == "Verdict: [dim]no read[/dim]"
+        assert "pricey" in app.status.verdict_line
+        assert "by +$11 at $54" in app.status.verdict_line
 
 
 @pytest.mark.asyncio

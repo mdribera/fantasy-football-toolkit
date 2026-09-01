@@ -855,17 +855,12 @@ class TextualWsApp(App):
                     f"[yellow]Tier {match.tier} {match.position} -- last one. "
                     f"Next tier: {equivalent.name} (${equivalent.value})[/yellow]")
 
-            adjusted = self._adjusted(match)
-            verdict = auction.bid_verdict(pointer.high_bid, adjusted)
-            if adjusted is None:
-                self.status.verdict_line = (
-                    f"Verdict: [{verdict.style}]{verdict.label}[/{verdict.style}]")
-            else:
-                diff = pointer.high_bid - adjusted
-                sign = "+" if diff >= 0 else "-"
-                self.status.verdict_line = (
-                    f"Verdict: [{verdict.style}]{verdict.label}[/{verdict.style}] "
-                    f"by {sign}${abs(diff)} at ${pointer.high_bid}")
+            verdict = auction.bid_verdict(pointer.high_bid, match.value)
+            diff = pointer.high_bid - match.value
+            sign = "+" if diff >= 0 else "-"
+            self.status.verdict_line = (
+                f"Verdict: [{verdict.style}]{verdict.label}[/{verdict.style}] "
+                f"by {sign}${abs(diff)} at ${pointer.high_bid}")
 
             if auction.qb_bye_would_clash(self.state, self.state.my_team, self.vals, match):
                 self.status.bye_line = (
@@ -909,7 +904,7 @@ class TextualWsApp(App):
         match = self.lookup.get(name.lower())
         plan = auction.evaluate_bid(
             args, pointer.high_bid, self.state.max_bid(self.state.my_team),
-            self._adjusted(match) or None,
+            match.value if match else None,
             already_high=self._i_hold_the_high())
 
         if isinstance(plan, auction.BidRefused):

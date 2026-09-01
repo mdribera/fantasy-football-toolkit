@@ -256,11 +256,11 @@ class BidReady:
 BidPlan = BidRefused | BidNeedsConfirmation | BidReady
 
 TYPO_GUARD_JUMP = 10             # confirm if the bid clears the current high by more than this
-TYPO_GUARD_SHEET_MULTIPLE = 1.5  # confirm if the bid exceeds this multiple of adjusted sheet value
+TYPO_GUARD_SHEET_MULTIPLE = 1.5  # confirm if the bid exceeds this multiple of sheet value
 
 
 def evaluate_bid(args: list[str], current_high: int, my_max_bid: int,
-                  adjusted_value: int | None, already_high: bool = False) -> BidPlan:
+                  sheet_value: int | None, already_high: bool = False) -> BidPlan:
     """Decide what 'b' or 'b <amount>' should do, before anything is sent.
 
     args is the command split on whitespace with the leading 'b' removed.
@@ -286,8 +286,8 @@ def evaluate_bid(args: list[str], current_high: int, my_max_bid: int,
     jump = amount - current_high
     if jump > TYPO_GUARD_JUMP:
         return BidNeedsConfirmation(amount, f"${amount} is ${jump} over the current high of ${current_high}")
-    if adjusted_value is not None and amount > adjusted_value * TYPO_GUARD_SHEET_MULTIPLE:
-        return BidNeedsConfirmation(amount, f"${amount} is well over the ${adjusted_value} adjusted sheet value")
+    if sheet_value is not None and amount > sheet_value * TYPO_GUARD_SHEET_MULTIPLE:
+        return BidNeedsConfirmation(amount, f"${amount} is well over the ${sheet_value} sheet value")
     return BidReady(amount)
 
 
@@ -304,11 +304,14 @@ class Verdict:
     style: str
 
 
-def bid_verdict(current_high: int, adjusted_value: int | None) -> Verdict:
-    """How the current high bid reads against the inflation-adjusted sheet."""
-    if not adjusted_value:
+def bid_verdict(current_high: int, sheet_value: int | None) -> Verdict:
+    """How the current high bid reads against the sheet value -- not the
+    inflation-adjusted price, which this room's own front-loaded early
+    pace (see docs/auction-strategy.md) drives broadly negative for reasons
+    that have nothing to do with the player on the clock."""
+    if not sheet_value:
         return Verdict("no read", "dim")
-    ratio = current_high / adjusted_value
+    ratio = current_high / sheet_value
     if ratio < VERDICT_BARGAIN_RATIO:
         return Verdict("good value", "green")
     if ratio <= VERDICT_FAIR_RATIO:
