@@ -24,7 +24,7 @@ from textual.screen import ModalScreen
 from textual.widgets import DataTable, Footer, Input, RichLog, Static
 
 import auction
-from ff import config, draft_state, draft_sync, draft_ws, values
+from ff import config, draft_state, draft_sync, draft_ws, sounds, values
 
 POLL_INTERVAL_S = 0.3  # matches the cadence of the printer thread it replaces
 
@@ -371,6 +371,7 @@ class TextualWsApp(App):
         Binding("space", "star", "star"),
         Binding("slash", "search", "search"),
         Binding("colon", "command", "command"),
+        Binding("s", "toggle_sound", "sound"),
         Binding("escape", "dismiss_banner", "dismiss"),
         Binding("q", "shutdown", "quit"),
     ]
@@ -387,6 +388,7 @@ class TextualWsApp(App):
         self.starred: set[str] = set(nomination_list)
         self.nomination_list_path = nomination_list_path
         self.lookup = {v.name.lower(): v for v in vals}
+        self.sounds = sounds.SoundPlayer()
         self._log_player_id: int | None = None
         self._last_bid_team = ""
         self._last_bid_team_id: int | None = None
@@ -445,7 +447,7 @@ class TextualWsApp(App):
         self.output.border_title = "Output (:me :teams :market :best :need)"
         self._update_roster_title()
         self.nominations.border_title = "Board (n nominate, space star, / search)"
-        self.status.border_title = "NOW"
+        self._update_status_title()
         self.drafted.border_title = "DRAFTED (of starting spots)"
 
         self._reload_board()
@@ -501,6 +503,8 @@ class TextualWsApp(App):
         # top of a blank slate, not get overwritten back to it.
         if self.ws.pointer.player_id != self._log_player_id:
             self.bidlog.clear()
+            if self.ws.pointer.player_id is not None:
+                self.sounds.play("nominated")
             self._log_player_id = self.ws.pointer.player_id
             self.status.clock_s = 0
             self._last_bid_team = ""
@@ -535,6 +539,8 @@ class TextualWsApp(App):
                 if milestone:
                     self._flash(f"[yellow]{milestone}s left[/yellow], "
                                 f"high bid ${event.high_bid_amount}")
+                    if milestone == 5:
+                        self._play_five_second_cue(event)
             elif isinstance(event, draft_ws.Sold):
                 team = config.TEAMS.get(event.team_id, f"TEAM{event.team_id}")
                 name, position = self.resolver.resolve(event.player_id)
@@ -610,6 +616,20 @@ class TextualWsApp(App):
         if (self._pending_bid and self._pending_bid[0] == player_id
                 and team_id == config.MY_TEAM_ID and amount >= self._pending_bid[1]):
             self._pending_bid = None
+
+    def _play_five_second_cue(self, event: draft_ws.Clock) -> None:
+        """A last chance to get a bid in before the clock runs out -- fires
+        only when we're not already the high bidder and the price is still
+        under Sheet, not on every one of ~160 nominations a night regardless
+        of whether it's actually worth our attention."""
+        if event.high_bid_team == config.MY_TEAM_ID:
+            return
+        name, _ = self.resolver.resolve(event.player_id)
+        match = self.lookup.get(name.lower())
+        if match is None or event.high_bid_amount is None:
+            return
+        if match.value > event.high_bid_amount:
+            self.sounds.play("five")
 
     def _handle_nomination_error(self, event: draft_ws.Error) -> None:
         """A rejected NOMINATE leaves the turn exactly where a silently
@@ -749,6 +769,15 @@ class TextualWsApp(App):
 
     def _update_roster_title(self) -> None:
         self.roster_box.border_title = f"{self.selected_team} -- tab to focus, up/down to select"
+
+    def _update_status_title(self) -> None:
+        # Mute is otherwise invisible -- there's no persistent on-screen
+        # indicator anywhere else, so the marker lives here rather than
+        # relying on the one-line flash from the keypress that toggled it.
+        # No square brackets: border_title renders through Rich markup, and
+        # "[muted]" parses as an (unknown, silently dropped) style tag.
+        suffix = " -- muted" if not self.sounds.enabled else ""
+        self.status.border_title = f"NOW{suffix}"
 
     def _left_cell(self, budget_left: int) -> Text:
         """TeamList's Left column, red at $0 and green at a full
@@ -1105,6 +1134,11 @@ class TextualWsApp(App):
         self.command.cursor_position = len(self.command.value)
         self.command.focus()
 
+    def action_toggle_sound(self) -> None:
+        self.sounds.enabled = not self.sounds.enabled
+        self._update_status_title()
+        self._flash("Sound muted." if not self.sounds.enabled else "Sound on.")
+
     def _save_starred(self) -> None:
         if self.nomination_list_path is None:
             return
@@ -1137,10 +1171,12 @@ class TextualWsApp(App):
 
     def _raise_turn_alert(self) -> None:
         """An idle nomination turn is an unattended-purchase risk, so this
-        takes the border, the banner, and the bell all at once."""
+        takes the border, the banner, and a sound all at once -- the plain
+        terminal bell only as a fallback on a machine with no audio."""
         self.banner.show("YOUR TURN TO NOMINATE -- highlight a player and press n")
         self.screen.add_class("my-turn")
-        self.bell()
+        if not self.sounds.play("my-turn"):
+            self.bell()
         # Don't steal focus from an open command input: the input stays
         # displayed but stops receiving keystrokes, and the next `n` keypress
         # meant for it fires the nominate hotkey instead.

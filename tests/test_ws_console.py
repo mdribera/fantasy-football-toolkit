@@ -102,6 +102,21 @@ class FakeWsController:
         return auction.clock_milestone(event.remaining_ms, self._announced)
 
 
+class FakeSoundPlayer:
+    """Records which events fired instead of shelling out to a real
+    player, so tests can assert on the wiring without any actual audio."""
+
+    def __init__(self):
+        self.enabled = True
+        self.played: list[str] = []
+
+    def play(self, event: str) -> bool:
+        if not self.enabled:
+            return False
+        self.played.append(event)
+        return True
+
+
 def _stub_closed_league(state, vals) -> None:
     """Scale state's league-wide slots/dollars down to match the tiny
     FIXTURE_ROWS pool exactly, so forward_inflation(vals) reads 1.0 with
@@ -2265,3 +2280,127 @@ async def test_a_starred_name_missing_from_values_json_is_not_a_row(tmp_path):
         names = [row.name for row in app._board_rows]
     assert "Not On The Board" not in names
     assert "Justin Jefferson" in names
+
+
+# --- T52: notification sounds -------------------------------------------
+
+@pytest.mark.asyncio
+async def test_a_new_nominee_plays_the_nominated_sound(tmp_path):
+    app, ws, _ = make_app(tmp_path)
+    app.sounds = FakeSoundPlayer()
+    async with app.run_test() as pilot:
+        ws.feed(draft_ws.Bid(4, 3915511, 1, 25000, 25000))
+        await app._poll()
+        await pilot.pause()
+    assert app.sounds.played == ["nominated"]
+
+
+@pytest.mark.asyncio
+async def test_the_nominated_sound_does_not_fire_when_the_nomination_clears(tmp_path):
+    """apply_ws_event resets pointer.player_id to None on a Nomination frame
+    -- that transition must not itself count as a new nominee coming up."""
+    app, ws, _ = make_app(tmp_path)
+    app.sounds = FakeSoundPlayer()
+    async with app.run_test() as pilot:
+        ws.feed(draft_ws.Bid(4, 3915511, 1, 25000, 25000))
+        await app._poll()
+        await pilot.pause()
+        app.sounds.played.clear()
+        ws.feed(draft_ws.Nomination(7, 25000))
+        await app._poll()
+        await pilot.pause()
+    assert app.sounds.played == []
+
+
+@pytest.mark.asyncio
+async def test_five_second_cue_fires_when_outbid_and_under_sheet(tmp_path):
+    """Justin Jefferson's Sheet value is $52 (FIXTURE_ROWS); a $30 high bid
+    held by someone else is a last chance worth a sound."""
+    app, ws, _ = make_app(tmp_path)
+    app.sounds = FakeSoundPlayer()
+    async with app.run_test() as pilot:
+        # clock_milestone announces 10s before 5s -- cross both in order so
+        # the second frame is the one that actually reaches the 5s branch.
+        ws.feed(draft_ws.Clock(state=2, remaining_ms=9500,
+                                high_bid_team=4, player_id=3915514, high_bid_amount=30))
+        await app._poll()
+        await pilot.pause()
+        ws.feed(draft_ws.Clock(state=2, remaining_ms=4800,
+                                high_bid_team=4, player_id=3915514, high_bid_amount=30))
+        await app._poll()
+        await pilot.pause()
+    assert "five" in app.sounds.played
+
+
+@pytest.mark.asyncio
+async def test_five_second_cue_is_silent_when_we_are_the_high_bidder(tmp_path):
+    app, ws, _ = make_app(tmp_path)
+    app.sounds = FakeSoundPlayer()
+    async with app.run_test() as pilot:
+        ws.feed(draft_ws.Clock(state=2, remaining_ms=9500,
+                                high_bid_team=6, player_id=3915514, high_bid_amount=30))
+        await app._poll()
+        await pilot.pause()
+        ws.feed(draft_ws.Clock(state=2, remaining_ms=4800,
+                                high_bid_team=6, player_id=3915514, high_bid_amount=30))
+        await app._poll()
+        await pilot.pause()
+    assert "five" not in app.sounds.played
+
+
+@pytest.mark.asyncio
+async def test_five_second_cue_is_silent_when_the_price_is_not_under_sheet(tmp_path):
+    app, ws, _ = make_app(tmp_path)
+    app.sounds = FakeSoundPlayer()
+    async with app.run_test() as pilot:
+        ws.feed(draft_ws.Clock(state=2, remaining_ms=9500,
+                                high_bid_team=4, player_id=3915514, high_bid_amount=52))
+        await app._poll()
+        await pilot.pause()
+        ws.feed(draft_ws.Clock(state=2, remaining_ms=4800,
+                                high_bid_team=4, player_id=3915514, high_bid_amount=52))
+        await app._poll()
+        await pilot.pause()
+    assert "five" not in app.sounds.played
+
+
+@pytest.mark.asyncio
+async def test_five_second_cue_is_silent_for_an_unpriced_player(tmp_path):
+    app, ws, _ = make_app(tmp_path)
+    app.sounds = FakeSoundPlayer()
+    async with app.run_test() as pilot:
+        ws.feed(draft_ws.Clock(state=2, remaining_ms=9500,
+                                high_bid_team=4, player_id=999999, high_bid_amount=30))
+        await app._poll()
+        await pilot.pause()
+        ws.feed(draft_ws.Clock(state=2, remaining_ms=4800,
+                                high_bid_team=4, player_id=999999, high_bid_amount=30))
+        await app._poll()
+        await pilot.pause()
+    assert "five" not in app.sounds.played
+
+
+@pytest.mark.asyncio
+async def test_my_turn_plays_a_sound_instead_of_the_bell(tmp_path):
+    app, ws, _ = make_app(tmp_path)
+    app.sounds = FakeSoundPlayer()
+    async with app.run_test() as pilot:
+        ws.feed(draft_ws.Nomination(6, 25000))     # config.MY_TEAM_ID is 6
+        await app._poll()
+        await pilot.pause()
+    assert app.sounds.played == ["my-turn"]
+
+
+@pytest.mark.asyncio
+async def test_s_toggles_sound_and_marks_the_now_title(tmp_path):
+    app, ws, _ = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        assert app.status.border_title == "NOW"
+        await pilot.press("s")
+        await pilot.pause()
+        assert "muted" in app.status.border_title
+        assert app.sounds.enabled is False
+        await pilot.press("s")
+        await pilot.pause()
+        assert app.status.border_title == "NOW"
+        assert app.sounds.enabled is True
