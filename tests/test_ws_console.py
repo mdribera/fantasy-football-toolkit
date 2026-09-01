@@ -428,7 +428,7 @@ async def test_sale_log_survives_an_init_reconcile(tmp_path):
 @pytest.mark.asyncio
 async def test_sale_log_stays_pinned_to_the_bottom_on_a_non_sale_refresh(tmp_path):
     """T45: DataTable.clear() resets scroll to the top on every rebuild, and
-    _refresh_sales rebuilds on every _drain() -- not just the ones that add a
+    _refresh_panels runs on every _drain() -- not just the ones that add a
     sale. A live Clock frame arriving between sales must not snap the log
     back to row 0."""
     app, ws, state = make_app(tmp_path)
@@ -443,6 +443,85 @@ async def test_sale_log_stays_pinned_to_the_bottom_on_a_non_sale_refresh(tmp_pat
         await pilot.pause()
     assert app.salelog.scroll_y == app.salelog.max_scroll_y
     assert app.salelog.max_scroll_y > 0
+
+
+@pytest.mark.asyncio
+async def test_sale_log_does_not_rebuild_when_no_sale_landed(tmp_path):
+    """T45 follow-up: an unconditional rebuild-and-repin on every refresh
+    fixed the end state but not the trip there -- DataTable.clear() snaps
+    scroll_y to 0 synchronously, while the scroll_end() that re-pins the
+    bottom is deferred to after the next screen refresh, so a rebuild on a
+    refresh with no new sale still painted a one-frame flash to the top of
+    the log every time a live Clock/Bid frame arrived. _refresh_sales must
+    skip the clear/rebuild entirely when state.purchases hasn't changed
+    since the last render."""
+    app, ws, state = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        state.record_pick("Mystery Player", "K", 1, "HH", espn_pick_id=1)
+        app._refresh_panels()
+        await pilot.pause()
+        clear_calls = 0
+        original_clear = app.salelog.clear
+
+        def counting_clear(*args, **kwargs):
+            nonlocal clear_calls
+            clear_calls += 1
+            return original_clear(*args, **kwargs)
+
+        app.salelog.clear = counting_clear
+        for _ in range(5):
+            ws.feed(draft_ws.Clock(state=2, remaining_ms=5000, high_bid_team=1,
+                                    player_id=999, high_bid_amount=5))
+            await app._poll()
+            await pilot.pause()
+    assert clear_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_sale_log_appends_a_real_sale_without_clearing(tmp_path):
+    """A genuine new sale is the common case, not the rare one -- it must
+    extend the table in place the same way BidLog's RichLog.write appends,
+    not clear-and-rebuild, or the flash this whole test file is guarding
+    against would still happen on every real sale even though it's now
+    gone from the no-op Clock-only refreshes."""
+    app, ws, state = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        state.record_pick("Mystery Player 1", "K", 1, "HH", espn_pick_id=1)
+        app._refresh_panels()
+        await pilot.pause()
+        clear_calls = 0
+        original_clear = app.salelog.clear
+
+        def counting_clear(*args, **kwargs):
+            nonlocal clear_calls
+            clear_calls += 1
+            return original_clear(*args, **kwargs)
+
+        app.salelog.clear = counting_clear
+        state.record_pick("Mystery Player 2", "K", 1, "HH", espn_pick_id=2)
+        app._refresh_panels()
+        await pilot.pause()
+    assert clear_calls == 0
+    assert [row[0] for row in _sale_rows(app)] == ["Mystery Player 1", "Mystery Player 2"]
+
+
+@pytest.mark.asyncio
+async def test_sale_log_rebuilds_on_an_init_correction(tmp_path):
+    """A wholesale rewrite -- INIT reconciling a purchase to a different
+    price than what was recorded by hand -- is not a simple append (the new
+    list doesn't start with everything already on screen), so it still
+    needs the full clear-and-rebuild path."""
+    app, ws, state = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        state.record_pick("Bijan Robinson", "RB", 40, "HH", espn_pick_id=3915511)
+        app._refresh_panels()
+        await pilot.pause()
+        blob = _build_init_blob(999, {1: (6, 3915511, 54)})
+        ws.feed(draft_ws.Init(blob))
+        await app._poll()
+        await pilot.pause()
+    assert ("Bijan Robinson", "RB", "ME", "$54", "-11") in _sale_rows(app)
+    assert ("Bijan Robinson", "RB", "HH", "$40", "3") not in _sale_rows(app)
 
 
 def _build_init_blob(league_id: int, sales: dict[int, tuple[int, int, int]]) -> str:
@@ -755,8 +834,9 @@ async def test_status_espn_average_and_edge_match_the_board_row(tmp_path):
 @pytest.mark.asyncio
 async def test_roster_header_colors_by_need_and_target(tmp_path):
     """T29 drops the "(want X)"/"(3rd for byes)" text from the slot label;
-    the bench target still has to be visible, now as a third color state
-    instead of a second line of prose. Exact counts move to `:me`'s footer."""
+    the bench target still has to be visible, now on the same red-to-green
+    ramp DRAFTED and the Teams Left column use instead of a second line of
+    prose. Exact counts move to `:me`'s footer."""
     app, ws, state = make_app(tmp_path)
     state.record("Josh Allen", "QB", 60, "ME")
     state.record("Lamar Jackson", "QB", 40, "ME")
@@ -767,9 +847,9 @@ async def test_roster_header_colors_by_need_and_target(tmp_path):
         assert "QB 2/2" in text
         assert "3rd for byes" not in text
         assert "want" not in text
-        assert app.roster._slot_label("QB", 0, 2, 3) == "[red]QB 0/2[/]"
-        assert app.roster._slot_label("QB", 2, 2, 3) == "[yellow]QB 2/2[/]"
-        assert app.roster._slot_label("QB", 3, 2, 3) == "[green]QB 3/2[/]"
+        assert app.roster._slot_label("QB", 0, 2, 3) == f"[{ws_console._ramp_style(0/3)}]QB 0/2[/]"
+        assert app.roster._slot_label("QB", 2, 2, 3) == f"[{ws_console._ramp_style(2/3)}]QB 2/2[/]"
+        assert app.roster._slot_label("QB", 3, 2, 3) == f"[{ws_console._ramp_style(3/3)}]QB 3/2[/]"
 
 
 @pytest.mark.asyncio

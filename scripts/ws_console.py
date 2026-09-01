@@ -252,16 +252,13 @@ class RosterPanel(Static):
         # A starting requirement met is not the same as a full bench -- QB
         # especially, where the third quarterback exists for byes and the
         # in-season waiver wire is empty, so this can't collapse to a single
-        # met/unmet color the way needs() alone would suggest. Three states:
-        # short of the starting requirement, starters filled but bench target
-        # not, and target fully met. Exact counts toward the target live on
-        # `:me`'s footer, not here.
-        if have < need:
-            color = "red"
-        elif have < target:
-            color = "yellow"
-        else:
-            color = "green"
+        # met/unmet color the way needs() alone would suggest. Same
+        # continuous ramp as DraftCounts' position counters and TeamList's
+        # budget column, colored on progress toward the full bench target
+        # rather than a single met/unmet split. Exact counts toward the
+        # target live on `:me`'s footer, not here.
+        fraction = have / target if target else 0.0
+        color = _ramp_style(fraction)
         label = f"{pos} {have}/{need}"
         if pos == "QB" and self.bye_clash is not None:
             color = "red"
@@ -382,6 +379,7 @@ class TextualWsApp(App):
         self._board_sort = "rank"
         self.selected_team = state.my_team
         self._team_rows: list[str] = []
+        self._sales_rendered: list[draft_state.Purchase] = []
 
     def compose(self) -> ComposeResult:
         yield Banner(id="banner")
@@ -810,21 +808,38 @@ class TextualWsApp(App):
                 self._diff_cell(match.value - p.price) if match else Text("-", style="dim"),
             )
 
+    def _add_sale_row(self, p: draft_state.Purchase) -> None:
+        match = self.lookup.get(p.player.lower())
+        self.salelog.add_row(
+            p.player, p.position, p.team, f"${p.price}",
+            self._diff_cell(match.value - p.price) if match else Text("-", style="dim"),
+        )
+
     def _refresh_sales(self) -> None:
-        """Rebuild from state.purchases every refresh, the same convention
-        _refresh_roster and _refresh_teams already use -- correct after a
-        reconcile that rewrites purchases wholesale, not just after an
-        appended Sold event. DataTable.clear() resets scroll to the top, so
-        every rebuild -- not just the ones that add a sale -- has to re-pin
-        the bottom, or a live Bid/Clock frame arriving between sales snaps
-        the log back to row 0."""
-        self.salelog.clear()
-        for p in self.state.purchases:
-            match = self.lookup.get(p.player.lower())
-            self.salelog.add_row(
-                p.player, p.position, p.team, f"${p.price}",
-                self._diff_cell(match.value - p.price) if match else Text("-", style="dim"),
-            )
+        """Extend the log in place instead of clearing and rebuilding it --
+        the same append-and-pin BidLog already gets for free from
+        RichLog.auto_scroll, which never clears either. DataTable.clear()
+        snaps scroll_y to 0 synchronously, while the scroll_end() that's
+        supposed to re-pin the bottom is deferred to after the next screen
+        refresh (Textual's DataTable.scroll_end, immediate=False by
+        default) -- so any clear painted a visible flash to the top, once a
+        second on live Clock frame alone, and again on every real sale.
+        A full rebuild is still needed on the rare wholesale rewrite -- an
+        INIT reconcile correcting or dropping a purchase, not just adding
+        one -- detected by the new list no longer starting with everything
+        already on screen."""
+        purchases = self.state.purchases
+        rendered = self._sales_rendered
+        if purchases == rendered:
+            return
+        if purchases[:len(rendered)] == rendered:
+            for p in purchases[len(rendered):]:
+                self._add_sale_row(p)
+        else:
+            self.salelog.clear()
+            for p in purchases:
+                self._add_sale_row(p)
+        self._sales_rendered = list(purchases)
         self.salelog.scroll_end(animate=False)
 
     def _refresh_analysis(self) -> None:
