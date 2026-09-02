@@ -261,11 +261,14 @@ class TeamList(DataTable):
     """Every team in the league, selectable -- highlighting a row points
     RosterPanel and RosterTable at that team instead of always showing ours.
     Rebuilt on the same cadence as NominationTable, and for the same reason:
-    the Left column has to stay live as budgets move."""
+    Left/Max/Spots all have to stay live as budgets and rosters move. Max and
+    Spots are the same two numbers RosterPanel's header already shows for
+    whichever team is selected, surfaced here for every team at a glance
+    instead of needing a select per rival."""
 
     def on_mount(self) -> None:
         self.cursor_type = "row"
-        self.add_columns("Team", "Left")
+        self.add_columns("Team", "Left", "Max", "Spots")
 
 
 class RosterPanel(Static):
@@ -846,7 +849,9 @@ class TextualWsApp(App):
             if team == on_clock:
                 style = f"{style} reverse".strip()
             label = Text(team, style=style)
-            self.team_list.add_row(label, self._left_cell(self.state.budget_left(team)))
+            self.team_list.add_row(
+                label, self._left_cell(self.state.budget_left(team)),
+                f"${self.state.max_bid(team)}", str(self.state.spots_left(team)))
         self._team_rows = teams
         if not teams:
             return

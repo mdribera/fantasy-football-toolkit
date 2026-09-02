@@ -1003,6 +1003,28 @@ async def test_team_list_left_column_reflects_each_teams_own_gradient(tmp_path):
         assert rows["ME"].style != rows["CCT"].style
 
 
+@pytest.mark.asyncio
+async def test_team_list_shows_max_bid_and_spots_left_per_team(tmp_path):
+    """T61: Max and Spots surface every team's numbers at a glance, the same
+    two RosterPanel's header already computes for whichever team is
+    selected, without needing a select per rival to see one."""
+    app, ws, state = make_app(tmp_path)
+    state.record("Justin Jefferson", "WR", 52, "ME")
+    async with app.run_test() as pilot:
+        app._refresh_panels()
+        await pilot.pause()
+        rows = {app.team_list.get_row_at(i)[0].plain: app.team_list.get_row_at(i)
+                for i in range(app.team_list.row_count)}
+        assert rows["ME"][2] == f"${state.max_bid('ME')}"
+        assert rows["ME"][3] == str(state.spots_left("ME"))
+        assert rows["CCT"][2] == f"${state.max_bid('CCT')}"
+        assert rows["CCT"][3] == str(state.spots_left("CCT"))
+        # ME spent $52 and CCT is untouched, so their numbers must diverge --
+        # not just both reading some shared default.
+        assert rows["ME"][2] != rows["CCT"][2]
+        assert rows["ME"][3] != rows["CCT"][3]
+
+
 def test_order_teams_follows_the_learned_nomination_cycle():
     teams = ["AUBREY", "CCT", "DRAKE", "FWD", "HH", "LEWE", "ME", "PITTS", "RRT", "SLAY"]
     order_ids = [2, 5, 1, 4, 11, 3, 7, 8, 10, 6]

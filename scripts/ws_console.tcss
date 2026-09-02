@@ -67,7 +67,7 @@ Screen.over-max {
 }
 
 #team-list {
-    width: 20;
+    width: 34;
     border-right: solid $primary;
 }
 
