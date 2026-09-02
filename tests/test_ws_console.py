@@ -1319,6 +1319,44 @@ async def test_a_watchdog_alert_survives_a_sold_event(tmp_path):
         assert app.banner.has_class("alert")
 
 
+# --- T56: red border past max bid ----------------------------------------
+
+@pytest.mark.asyncio
+async def test_screen_gets_over_max_border_once_the_high_bid_reaches_our_max(tmp_path):
+    """DraftState default budget/roster (no purchases) puts max_bid at $185
+    -- a high bid of $999 is comfortably past it regardless of price."""
+    app, ws, _ = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        ws.feed(draft_ws.Bid(4, 3915511, 999, 25000, 25000))
+        await app._poll()
+        await pilot.pause()
+        assert app.screen.has_class("over-max")
+
+
+@pytest.mark.asyncio
+async def test_screen_has_no_over_max_border_under_our_max(tmp_path):
+    app, ws, _ = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        ws.feed(draft_ws.Bid(4, 3915511, 30, 25000, 25000))
+        await app._poll()
+        await pilot.pause()
+        assert not app.screen.has_class("over-max")
+
+
+@pytest.mark.asyncio
+async def test_over_max_border_clears_once_the_nomination_ends(tmp_path):
+    app, ws, _ = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        ws.feed(draft_ws.Bid(4, 3915511, 999, 25000, 25000))
+        await app._poll()
+        await pilot.pause()
+        assert app.screen.has_class("over-max")
+        ws.feed(draft_ws.Sold(4, 3915511, 1, 999, 0))
+        await app._poll()
+        await pilot.pause()
+        assert not app.screen.has_class("over-max")
+
+
 @pytest.mark.asyncio
 async def test_disconnect_banner_clears_once_reconnected(tmp_path):
     app, ws, _ = make_app(tmp_path)

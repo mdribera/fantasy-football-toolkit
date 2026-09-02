@@ -2,6 +2,10 @@ Screen.my-turn {
     border: heavy $warning;
 }
 
+Screen.over-max {
+    border: heavy $error;
+}
+
 #banner {
     display: none;
     height: auto;

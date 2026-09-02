@@ -666,9 +666,7 @@ class TextualWsApp(App):
         if time.monotonic() - sent_at > self.BID_WATCHDOG_TIMEOUT_S:
             name, _ = self.resolver.resolve(player_id)
             elapsed = time.monotonic() - sent_at
-            message = (
-                f"Bid ${amount} on {name} was sent {elapsed:.0f}s ago but the server "
-                "hasn't confirmed it as the high bid -- check ESPN's own UI directly.")
+            message = (f"Bid ${amount} was not accepted ({elapsed:.0f}s ago).")
             self.banner.show(message, alert=True)
             self._flash(f"[red]{message} (unconfirmed)[/red]")
             self._pending_bid = None                     # alert once, don't spam every poll
@@ -681,6 +679,7 @@ class TextualWsApp(App):
             self.status.nominee = ""
             self.status.high_bid = 0
             self.status.high_bidder = ""
+            self.screen.set_class(False, "over-max")
             return
 
         name, position = self.resolver.resolve(pointer.player_id)
@@ -700,6 +699,10 @@ class TextualWsApp(App):
         self.status.tier = match.tier if match else 0
         self.status.bye = match.bye if match else None
         self.status.max_bid_amount = self.state.max_bid(self.state.my_team)
+        # A red border, same mechanism as my-turn's amber one -- the live
+        # high bid on the active nominee has reached or passed the most we
+        # can legally bid, whether or not we're the one bidding.
+        self.screen.set_class(pointer.high_bid >= self.status.max_bid_amount, "over-max")
 
     def _high_bidder_label(self) -> str:
         return self._last_bid_team
