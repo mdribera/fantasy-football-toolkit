@@ -1184,7 +1184,11 @@ class TextualWsApp(App):
     def action_toggle_sound(self) -> None:
         self.sounds.enabled = not self.sounds.enabled
         self._update_status_title()
-        self._flash("Sound muted." if not self.sounds.enabled else "Sound on.")
+        # A reply to a keypress, not part of the live bid stream -- BidLog
+        # clears on every new nomination, so a confirmation written there
+        # could vanish before Mark reads it.
+        self._output("Sound muted." if not self.sounds.enabled else "Sound on.",
+                     clear=False)
 
     def _save_starred(self) -> None:
         if self.nomination_list_path is None:

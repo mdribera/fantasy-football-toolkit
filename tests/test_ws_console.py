@@ -2642,3 +2642,16 @@ async def test_s_toggles_sound_and_marks_the_now_title(tmp_path):
         await pilot.pause()
         assert app.status.border_title == "NOW"
         assert app.sounds.enabled is True
+
+
+@pytest.mark.asyncio
+async def test_s_writes_its_confirmation_to_output_not_bidlog(tmp_path):
+    """T64: a reply to a keypress, not part of the live bid stream -- BidLog
+    clears on every new nomination and could wipe the confirmation before
+    Mark reads it."""
+    app, ws, _ = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.press("s")
+        await pilot.pause()
+        assert any("Sound muted" in str(line) for line in app.output.lines)
+        assert not any("Sound muted" in str(line) for line in app.bidlog.lines)
