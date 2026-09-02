@@ -296,3 +296,112 @@ def test_forward_inflation_by_position_tilt_approaches_raw_ratio_with_more_evide
 
     tilt = state.forward_inflation_by_position(vals)["QB"] / base
     assert abs(tilt - raw_ratio) < 0.02
+
+
+def _by_name(**projections: float):
+    """Build lineup_slots' projected callable from a name -> points map --
+    a purchase whose name is missing sorts as though unprojected (a player
+    off the sheet, or a name resolution failure)."""
+    return lambda p: projections.get(p.player, float("-inf"))
+
+
+def test_lineup_slots_reserves_every_starter_and_bench_row_when_empty():
+    """T68: the roster panel always shows all 16 slots -- QB, QB, RB, RB, WR,
+    WR, TE, FLEX, D/ST, K, then 6 bench rows -- whether anyone fills them or
+    not, matching config.STARTERS's order plus config.BENCH_SLOTS."""
+    slots = draft_state.lineup_slots([], _by_name())
+    assert [label for label, _ in slots] == [
+        "QB", "QB", "RB", "RB", "WR", "WR", "TE", "FLEX", "D/ST", "K",
+        "BE", "BE", "BE", "BE", "BE", "BE",
+    ]
+    assert all(purchase is None for _, purchase in slots)
+
+
+def test_lineup_slots_starters_go_to_the_top_projected_at_each_position():
+    """A third QB beyond the two starting slots goes to bench, ranked below
+    both starters regardless of draft order."""
+    roster = [
+        draft_state.Purchase("Third QB", "QB", 5, "ME"),
+        draft_state.Purchase("Best QB", "QB", 60, "ME"),
+        draft_state.Purchase("Second QB", "QB", 40, "ME"),
+    ]
+    projected = _by_name(**{"Best QB": 400, "Second QB": 350, "Third QB": 200})
+    slots = draft_state.lineup_slots(roster, projected)
+
+    qb_rows = [p.player for label, p in slots if label == "QB"]
+    bench_rows = [p.player for label, p in slots if label == "BE" and p]
+    assert qb_rows == ["Best QB", "Second QB"]
+    assert bench_rows == ["Third QB"]
+
+
+def test_lineup_slots_flex_takes_the_best_leftover_after_direct_slots_fill():
+    """FLEX only claims a player once RB, WR and TE's own starting slots are
+    already spoken for -- the third RB here outranks the TE but still lands
+    in FLEX, not ahead of either starting RB."""
+    roster = [
+        draft_state.Purchase("RB1", "RB", 50, "ME"),
+        draft_state.Purchase("RB2", "RB", 40, "ME"),
+        draft_state.Purchase("RB3", "RB", 30, "ME"),
+        draft_state.Purchase("WR1", "WR", 45, "ME"),
+        draft_state.Purchase("WR2", "WR", 35, "ME"),
+        draft_state.Purchase("TE1", "TE", 10, "ME"),
+    ]
+    projected = _by_name(RB1=300, RB2=250, RB3=200, WR1=280, WR2=260, TE1=150)
+    slots = draft_state.lineup_slots(roster, projected)
+
+    by_label = {label: (p.player if p else None) for label, p in slots
+                if label in ("RB", "WR", "TE", "FLEX")}
+    rb_rows = [p.player for label, p in slots if label == "RB"]
+    assert rb_rows == ["RB1", "RB2"]
+    assert by_label["FLEX"] == "RB3"
+
+
+def test_lineup_slots_never_gives_flex_to_a_kicker_or_defense():
+    """K and D/ST aren't in config.FLEX_ELIGIBLE, so a lone kicker fills the
+    K slot and leaves FLEX empty rather than borrowing it."""
+    roster = [draft_state.Purchase("Some Kicker", "K", 1, "ME")]
+    slots = draft_state.lineup_slots(roster, _by_name(**{"Some Kicker": 100}))
+    by_label = dict((label, p.player if p else None) for label, p in slots
+                    if label in ("K", "FLEX"))
+    assert by_label["K"] == "Some Kicker"
+    assert by_label["FLEX"] is None
+
+
+def test_lineup_slots_ranks_an_unprojected_player_last_at_his_position():
+    """A drafted player missing from the sheet (cut, renamed, a typo) still
+    fills his position's starting slot -- position decides eligibility, the
+    projection only orders within it -- but sorts behind anyone with a real
+    number."""
+    roster = [
+        draft_state.Purchase("Known QB", "QB", 55, "ME"),
+        draft_state.Purchase("Unmatched QB", "QB", 30, "ME"),
+    ]
+    projected = _by_name(**{"Known QB": 380})  # "Unmatched QB" has no entry
+    slots = draft_state.lineup_slots(roster, projected)
+    qb_rows = [p.player for label, p in slots if label == "QB"]
+    assert qb_rows == ["Known QB", "Unmatched QB"]
+
+
+def test_lineup_slots_sends_an_unknown_position_to_the_bench():
+    """draft_sync.PlayerResolver records position "?" for a player it can't
+    resolve -- that matches no starting slot, so it falls to the bench like
+    any other leftover instead of raising or silently vanishing."""
+    roster = [draft_state.Purchase("Mystery Player", "?", 1, "ME")]
+    slots = draft_state.lineup_slots(roster, _by_name(**{"Mystery Player": 999}))
+    assert all(p is None for label, p in slots if label != "BE")
+    bench_players = [p.player for label, p in slots if label == "BE" and p]
+    assert bench_players == ["Mystery Player"]
+
+
+def test_lineup_slots_never_drops_a_purchase_past_roster_size():
+    """A roster past the normal 16 (a corrupt state, or one of the
+    POSITION_MAX overstacks) grows the bench instead of hiding anyone --
+    2 WRs go to the WR starting slots, 1 to FLEX, and all 14 remaining
+    overflow the usual 6 bench rows rather than dropping any of them."""
+    roster = [draft_state.Purchase(f"WR{i}", "WR", 1, "ME") for i in range(17)]
+    projected = _by_name(**{f"WR{i}": 100 - i for i in range(17)})
+    slots = draft_state.lineup_slots(roster, projected)
+    bench_rows = [label for label, _ in slots if label == "BE"]
+    assert len(bench_rows) == 14
+    seen = {p.player for _, p in slots if p is not None}
+    assert seen == {f"WR{i}" for i in range(17)}

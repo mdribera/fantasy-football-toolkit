@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass, field, asdict, fields
 from pathlib import Path
 
@@ -358,3 +359,48 @@ class DraftState:
         purchases = [Purchase(**{k: v for k, v in p.items() if k in known})
                      for p in raw.get("purchases", [])]
         return cls(my_team=raw.get("my_team", "ME"), purchases=purchases, state_path=path)
+
+
+def lineup_slots(
+    roster: list[Purchase],
+    projected: Callable[[Purchase], float],
+) -> list[tuple[str, Purchase | None]]:
+    """Assign one team's purchases to display slots, ESPN-roster style: one
+    row per starting slot in config.STARTERS order (QB, QB, RB, RB, WR, WR,
+    TE, FLEX, D/ST, K), then config.BENCH_SLOTS generic "BE" rows -- a None
+    purchase (rendered "Empty") wherever a slot isn't filled yet.
+
+    Ranks by `projected` (the caller's own sheet-value lookup, kept out of
+    this module) so each position's starting slots go to its best players and
+    FLEX goes to the best leftover RB/WR/TE, in that order -- config.STARTERS
+    is already ordered that way, and for a single FLEX slot that greedy fill
+    is also the points-maximizing one. Bench uses the same ranking, so the cut
+    line between "would start elsewhere" and true bench depth stays visible.
+
+    Never drops a purchase: a roster past ROSTER_SIZE (a corrupt state, or one
+    of the POSITION_MAX overstacks) grows the bench instead of hiding anyone.
+    A purchase whose position matches no starting slot -- FLEX-ineligible and
+    not its own position's slot, or the "?" a failed name resolution records
+    -- simply never gets claimed by the starter loop and falls to the bench
+    like any other leftover.
+    """
+    ranked = sorted(roster, key=lambda p: -projected(p))
+    claimed: set[int] = set()  # id() of already-claimed Purchase objects
+    slots: list[tuple[str, Purchase | None]] = []
+
+    for pos, count in config.STARTERS.items():
+        eligible = config.FLEX_ELIGIBLE if pos == "FLEX" else (pos,)
+        for _ in range(count):
+            pick = next(
+                (p for p in ranked if id(p) not in claimed and p.position in eligible),
+                None,
+            )
+            if pick is not None:
+                claimed.add(id(pick))
+            slots.append((pos, pick))
+
+    leftover = [p for p in ranked if id(p) not in claimed]
+    for i in range(max(config.BENCH_SLOTS, len(leftover))):
+        slots.append(("BE", leftover[i] if i < len(leftover) else None))
+
+    return slots

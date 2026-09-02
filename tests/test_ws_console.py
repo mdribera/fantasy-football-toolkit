@@ -251,7 +251,7 @@ async def test_roster_table_puts_paid_between_sheet_and_edge(tmp_path):
     app, _, _ = make_app(tmp_path)
     async with app.run_test():
         headers = [str(c.label) for c in app.roster_table.columns.values()]
-        assert headers == ["Player", "Pos", "NFL", "Tier", "Bye", "Proj",
+        assert headers == ["Slot", "Player", "Pos", "NFL", "Tier", "Bye", "Proj",
                             "Sheet", "Paid", "Edge"]
 
 
@@ -632,7 +632,7 @@ async def test_init_backfill_refreshes_the_roster_panel(tmp_path):
         await app._poll()
         await pilot.pause()
         assert app.roster.budget_left == 146
-        assert ("Bijan Robinson", "RB", "ATL", "T2", "-", "300", "$43", "$54", "-11") in _roster_rows(app)
+        assert ("RB", "Bijan Robinson", "RB", "ATL", "T2", "-", "300", "$43", "$54", "-11") in _roster_rows(app)
 
 
 @pytest.mark.asyncio
@@ -815,9 +815,44 @@ async def test_roster_panel_tracks_budget_and_slots(tmp_path):
         await pilot.pause()
         assert app.roster.budget_left == 148
         assert app.roster.spots_left == 15
-        assert ("Justin Jefferson", "WR", "MIN", "T1", "-", "310", "$52", "$52", "+0") in _roster_rows(app)
+        assert ("WR", "Justin Jefferson", "WR", "MIN", "T1", "-", "310", "$52", "$52", "+0") in _roster_rows(app)
         assert ("WR", 1, 2, 5) in app.roster.slots
         assert ("QB", 0, 2, 3) in app.roster.slots
+
+
+@pytest.mark.asyncio
+async def test_roster_table_shows_all_sixteen_slots_empty_before_any_pick(tmp_path):
+    """T68: the roster panel reserves every starter and bench slot from the
+    first frame, ESPN-roster style, rather than only showing rows once
+    something fills them."""
+    app, ws, state = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        app._refresh_panels()
+        await pilot.pause()
+        rows = _roster_rows(app)
+        assert [row[0] for row in rows] == [
+            "QB", "QB", "RB", "RB", "WR", "WR", "TE", "FLEX", "D/ST", "K",
+            "BE", "BE", "BE", "BE", "BE", "BE",
+        ]
+        assert all(row[1] == "Empty" for row in rows)
+
+
+@pytest.mark.asyncio
+async def test_roster_table_flex_takes_the_best_leftover_after_starters_fill(tmp_path):
+    """T68: RB's own two starting slots go to the two highest-projected RBs;
+    the third-best RB fills FLEX rather than bumping either starter."""
+    app, ws, state = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        state.record("Bijan Robinson", "RB", 54, "ME")
+        state.record("Kenneth Walker III", "RB", 38, "ME")
+        state.record("Tony Pollard", "RB", 22, "ME")
+        app._refresh_panels()
+        await pilot.pause()
+        rows = _roster_rows(app)
+        rb_names = [row[1] for row in rows if row[0] == "RB"]
+        flex_row = next(row for row in rows if row[0] == "FLEX")
+        assert rb_names == ["Bijan Robinson", "Kenneth Walker III"]
+        assert flex_row[1] == "Tony Pollard"
 
 
 @pytest.mark.asyncio
@@ -840,9 +875,12 @@ async def test_roster_table_keeps_every_player_as_the_roster_grows(tmp_path):
             app._refresh_panels()
             await pilot.pause()
         rows = _roster_rows(app)
-        assert len(rows) == 4
-        assert ("Amon-Ra St. Brown", "WR", "-", "-", "-", "-", "-", "$46", "-") in rows
-        assert ("Justin Jefferson", "WR", "MIN", "T1", "-", "310", "$52", "$36", "+16") in rows
+        assert len(rows) == 16  # every starter + bench slot, filled or not
+        names = {row[1] for row in rows}
+        assert names == {"Puka Nacua", "Amon-Ra St. Brown", "Jonathan Taylor",
+                          "Justin Jefferson", "Empty"}
+        assert ("FLEX", "Amon-Ra St. Brown", "WR", "-", "-", "-", "-", "-", "$46", "-") in rows
+        assert ("WR", "Justin Jefferson", "WR", "MIN", "T1", "-", "310", "$52", "$36", "+16") in rows
 
 
 @pytest.mark.asyncio
@@ -1134,7 +1172,7 @@ async def test_selecting_another_team_repoints_the_roster(tmp_path):
         app.team_list.move_cursor(row=app._team_rows.index("CCT"))
         await pilot.pause()
         assert app.selected_team == "CCT"
-        assert ("Bijan Robinson", "RB", "ATL", "T2", "-", "300", "$43", "$43", "+0") in _roster_rows(app)
+        assert ("RB", "Bijan Robinson", "RB", "ATL", "T2", "-", "300", "$43", "$43", "+0") in _roster_rows(app)
         assert app.roster.budget_left == state.budget_left("CCT")
 
 
@@ -2541,8 +2579,8 @@ async def test_roster_nfl_column_shows_the_pro_team_or_a_dash(tmp_path):
         app._refresh_panels()
         await pilot.pause()
     rows = _roster_rows(app)
-    assert ("Justin Jefferson", "WR", "MIN", "T1", "-", "310", "$52", "$52", "+0") in rows
-    assert any(row[0] == "Undrafted Kicker" and row[2] == "-" for row in rows)
+    assert ("WR", "Justin Jefferson", "WR", "MIN", "T1", "-", "310", "$52", "$52", "+0") in rows
+    assert any(row[1] == "Undrafted Kicker" and row[3] == "-" for row in rows)
 
 
 @pytest.mark.asyncio

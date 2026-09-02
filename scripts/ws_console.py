@@ -349,16 +349,20 @@ class RosterPanel(Static):
 
 
 class RosterTable(DataTable):
-    """The selected team's drafted players, one row each -- a DataTable so
-    the list scrolls and virtualizes like NominationTable instead of a
-    Static's fixed "auto" height silently clipping it once the roster
-    grows."""
+    """The selected team's roster, one row per slot -- fixed starter slots in
+    config.STARTERS order (QB, QB, RB, RB, WR, WR, TE, FLEX, D/ST, K) followed
+    by config.BENCH_SLOTS bench rows, every slot shown whether filled or not,
+    like ESPN's own roster view. A DataTable so the list scrolls and
+    virtualizes like NominationTable instead of a Static's fixed "auto"
+    height silently clipping it once the roster grows. The Pos column stays
+    alongside Slot because the slot label alone can't say which position a
+    FLEX or bench row actually holds."""
 
     can_focus = False
 
     def on_mount(self) -> None:
         self.cursor_type = "none"
-        self.add_columns("Player", "Pos", "NFL", "Tier", "Bye", "Proj", "Sheet", "Paid", "Edge")
+        self.add_columns("Slot", "Player", "Pos", "NFL", "Tier", "Bye", "Proj", "Sheet", "Paid", "Edge")
 
 
 class NominationTable(DataTable):
@@ -860,6 +864,14 @@ class TextualWsApp(App):
         style = "green" if diff > 0 else "red" if diff < 0 else "dim"
         return Text.from_markup(f"[{style}]{diff:+d}[/{style}]")
 
+    def _projected_points(self, p: draft_state.Purchase) -> float:
+        """Sheet projection for a purchase, for draft_state.lineup_slots's
+        ranking -- an unmatched player (off the board, or a name resolution
+        failure) sorts last within his position rather than crashing the
+        sort, since position alone decides which slot he's eligible for."""
+        match = self.lookup.get(p.player.lower())
+        return match.projected_points if match else float("-inf")
+
     def _update_roster_title(self) -> None:
         self.roster_box.border_title = f"{self.selected_team} -- tab to focus, up/down to select"
 
@@ -960,12 +972,17 @@ class TextualWsApp(App):
             if pos != "FLEX"
         )
         self.roster_table.clear()
-        for p in self.state.purchases:
-            if p.team != team:
+        roster = [p for p in self.state.purchases if p.team == team]
+        for slot, p in draft_state.lineup_slots(roster, self._projected_points):
+            if p is None:
+                self.roster_table.add_row(
+                    slot, Text("Empty", style="dim"),
+                    "-", "-", "-", "-", "-", "-", "-",
+                )
                 continue
             match = self.lookup.get(p.player.lower())
             self.roster_table.add_row(
-                p.player, p.position,
+                slot, p.player, p.position,
                 match.pro_team if match else "-",
                 f"T{match.tier}" if match else "-",
                 str(match.bye) if match and match.bye else "-",
