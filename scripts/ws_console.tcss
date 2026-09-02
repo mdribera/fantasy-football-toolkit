@@ -15,8 +15,16 @@ Screen.over-max {
 }
 
 #banner {
-    display: none;
-    height: auto;
+    /* Reserved even when idle -- visibility: hidden rather than display:
+       none, so an alert appearing or clearing never shifts every panel
+       below it. show()/hide() flip `visible`, not `display`. Fixed to one
+       row (text-wrap/text-overflow) for the same reason: a long alert
+       growing to two or three rows would shift the layout exactly as much
+       as the old display:none toggle did. */
+    visibility: hidden;
+    height: 1;
+    text-wrap: nowrap;
+    text-overflow: ellipsis;
     padding: 0 1;
     text-align: center;
     text-style: bold;

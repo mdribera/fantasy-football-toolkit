@@ -19,6 +19,7 @@ from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
+from textual.content import Content
 from textual.reactive import reactive
 from textual.screen import ModalScreen
 from textual.widgets import DataTable, Footer, Input, RichLog, Static
@@ -30,8 +31,11 @@ POLL_INTERVAL_S = 0.3  # matches the cadence of the printer thread it replaces
 
 
 class Banner(Static):
-    """Full-width alert line. Hidden until something needs to be impossible
-    to miss: your nomination turn, or a watchdog/reconnect alert.
+    """Full-width alert line. Its row is always reserved (see #banner in
+    ws_console.tcss) -- `show`/`hide` toggle `visible`, not `display`, so an
+    alert appearing or clearing never shifts every panel below it. Empty and
+    invisible until something needs to be impossible to miss: your
+    nomination turn, or a watchdog/reconnect alert.
 
     Alerts queue rather than silently overwrite each other: whatever was
     showing when a new one arrives waits behind it instead of vanishing.
@@ -45,6 +49,13 @@ class Banner(Static):
         self._current: tuple[str, bool, bool, int] | None = None
         self._queue: list[tuple[str, bool, bool, int]] = []
 
+    @property
+    def showing(self) -> bool:
+        """Whether an alert is current -- the `_current`/`_queue` state, not
+        the widget's own `display` (always True; its row is reserved) or
+        `visible` (what actually toggles when an alert appears/clears)."""
+        return self._current is not None
+
     def show(self, message: str, alert: bool = False, disconnect: bool = False) -> None:
         """Queue behind whatever's showing, unless this is an exact repeat of
         the current alert or one already queued -- an identical alert firing
@@ -55,28 +66,27 @@ class Banner(Static):
         key = (message, alert, disconnect)
         if self._current is not None and self._current[:3] == key:
             self._current = (*key, self._current[3] + 1)
-            if self.display:
-                self._render_current()
+            self._render_current()
             return
         for i, item in enumerate(self._queue):
             if item[:3] == key:
                 self._queue[i] = (*key, item[3] + 1)
                 return
-        if self.display and self._current is not None:
+        if self.showing:
             self._queue.append(self._current)
         self._current = (*key, 1)
-        self.display = True
+        self.visible = True
         self._render_current()
 
     def hide(self) -> None:
-        self.display = False
+        self.visible = False
         self._current = None
         self._queue.clear()
 
     def dismiss(self) -> None:
         """Drop whatever is showing and reveal the next queued alert, oldest
         first, or hide entirely once nothing is left."""
-        if not self.display:
+        if not self.showing:
             return
         if self._queue:
             self._current = self._queue.pop(0)
@@ -112,7 +122,11 @@ class Banner(Static):
         repeat_suffix = f"  (x{repeats})" if repeats > 1 else ""
         text = message + repeat_suffix + (f"  (+{len(self._queue)} more, esc to dismiss)"
                           if self._queue else "  (esc to dismiss)")
-        self.update(Text(text))
+        # Content, not rich.Text -- text-overflow: ellipsis (ws_console.tcss)
+        # is only honored by Textual's own Content rendering path, and
+        # Content(str) stays literal rather than markup-parsed, same as
+        # Text(str) was.
+        self.update(Content(text))
         self.set_class(alert, "alert")
 
 
@@ -344,7 +358,7 @@ class RosterTable(DataTable):
 
     def on_mount(self) -> None:
         self.cursor_type = "none"
-        self.add_columns("Player", "Pos", "NFL", "Tier", "Bye", "Paid", "Proj", "Sheet", "Edge")
+        self.add_columns("Player", "Pos", "NFL", "Tier", "Bye", "Proj", "Sheet", "Paid", "Edge")
 
 
 class NominationTable(DataTable):
@@ -516,7 +530,12 @@ class TextualWsApp(App):
             message = (
                 f"LIVE FEED ERROR: {exc!r} -- display and auto-record hit an error on one "
                 "frame and are continuing. Check ws-log-*.jsonl and your roster carefully.")
-            self.banner.show(message, alert=True)
+            # The banner gets a one-line summary (its row is fixed-height,
+            # see ws_console.tcss's #banner) -- the full exc!r detail still
+            # reaches the bid log below via _flash.
+            self.banner.show(
+                f"LIVE FEED ERROR: {type(exc).__name__} -- one frame lost, still running. "
+                "Check your roster.", alert=True)
             self._flash(f"[red]{message}[/red]")
 
     def _drain(self) -> None:
@@ -612,7 +631,9 @@ class TextualWsApp(App):
                             f"data/draft-state.json already has {existing.team} "
                             f"for ${existing.price} on the same player -- your "
                             f"roster/budget may now be wrong. Check the file by hand.")
-                        self.banner.show(message, alert=True)
+                        self.banner.show(
+                            f"SOLD CONFLICT: {name} -- server {team} ${event.price}, "
+                            f"local {existing.team} ${existing.price}.", alert=True)
                         self._flash(f"[red]{message}[/red]")
                 elif self.state.record_pick(name, position, event.price, team,
                                             espn_pick_id=event.player_id):
@@ -634,7 +655,9 @@ class TextualWsApp(App):
                 if init is None:
                     message = ("INIT frame could not be decoded -- roster may be "
                                 "stale until the next successful reconnect.")
-                    self.banner.show(message, alert=True)
+                    self.banner.show(
+                        "INIT could not be decoded -- roster may be stale until "
+                        "the next reconnect.", alert=True)
                     self._flash(f"[red]{message}[/red]")
                 else:
                     self._backup_state_once()
@@ -646,7 +669,10 @@ class TextualWsApp(App):
                             f"{len(report.corrected)} corrected, {len(report.removed)} "
                             "removed -- local state and the server had diverged. "
                             "Check your roster.")
-                        self.banner.show(message, alert=True)
+                        self.banner.show(
+                            f"Reconciled: {len(report.added)} added, "
+                            f"{len(report.corrected)} corrected, {len(report.removed)} "
+                            "removed -- check your roster.", alert=True)
                         self._flash(f"[red]{message}[/red]")
                     elif report.added:
                         message = (f"Reconciled with the server: added "
@@ -709,7 +735,9 @@ class TextualWsApp(App):
         message = (f"Nomination rejected: {name} was refused by ESPN "
                    f"({event.message}) -- your turn is still open, "
                    "highlight a player and press n.")
-        self.banner.show(message, alert=True)
+        self.banner.show(
+            f"NOMINATION REJECTED: {name} -- your turn is still open, "
+            "press n on another player.", alert=True)
         self.screen.add_class("my-turn")
         self._flash(f"[red]{message}[/red]")
 
@@ -941,9 +969,9 @@ class TextualWsApp(App):
                 match.pro_team if match else "-",
                 f"T{match.tier}" if match else "-",
                 str(match.bye) if match and match.bye else "-",
-                f"${p.price}",
                 f"{match.projected_points:.0f}" if match else "-",
                 f"${match.value}" if match else "-",
+                f"${p.price}",
                 self._diff_cell(match.value - p.price) if match else Text("-", style="dim"),
             )
 

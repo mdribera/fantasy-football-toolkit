@@ -245,6 +245,17 @@ async def test_roster_table_names_its_sheet_minus_paid_column_edge(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_roster_table_puts_paid_between_sheet_and_edge(tmp_path):
+    """T66: Paid moved next to Sheet and Edge for a direct actual-vs-value
+    comparison, rather than sitting two columns away from Sheet."""
+    app, _, _ = make_app(tmp_path)
+    async with app.run_test():
+        headers = [str(c.label) for c in app.roster_table.columns.values()]
+        assert headers == ["Player", "Pos", "NFL", "Tier", "Bye", "Proj",
+                            "Sheet", "Paid", "Edge"]
+
+
+@pytest.mark.asyncio
 async def test_q_exits(tmp_path):
     app, _, _ = make_app(tmp_path)
     async with app.run_test() as pilot:
@@ -621,7 +632,7 @@ async def test_init_backfill_refreshes_the_roster_panel(tmp_path):
         await app._poll()
         await pilot.pause()
         assert app.roster.budget_left == 146
-        assert ("Bijan Robinson", "RB", "ATL", "T2", "-", "$54", "300", "$43", "-11") in _roster_rows(app)
+        assert ("Bijan Robinson", "RB", "ATL", "T2", "-", "300", "$43", "$54", "-11") in _roster_rows(app)
 
 
 @pytest.mark.asyncio
@@ -632,7 +643,7 @@ async def test_init_with_only_additions_shows_a_non_alert_banner(tmp_path):
         ws.feed(draft_ws.Init(blob))
         await app._poll()
         await pilot.pause()
-        assert app.banner.display
+        assert app.banner.showing
         assert not app.banner.has_class("alert")
 
 
@@ -645,7 +656,7 @@ async def test_init_conflict_overwrites_local_state_and_alerts(tmp_path):
         ws.feed(draft_ws.Init(blob))
         await app._poll()
         await pilot.pause()
-        assert app.banner.display
+        assert app.banner.showing
         assert app.banner.has_class("alert")
     assert len(state.purchases) == 1
     assert state.purchases[0].team == "ME"
@@ -661,7 +672,7 @@ async def test_init_removes_a_local_purchase_the_server_does_not_have(tmp_path):
         ws.feed(draft_ws.Init(blob))
         await app._poll()
         await pilot.pause()
-        assert app.banner.display
+        assert app.banner.showing
         assert app.banner.has_class("alert")
     assert state.purchases == []
 
@@ -675,7 +686,7 @@ async def test_init_with_no_changes_stays_silent(tmp_path):
         ws.feed(draft_ws.Init(blob))
         await app._poll()
         await pilot.pause()
-        assert not app.banner.display
+        assert not app.banner.showing
 
 
 @pytest.mark.asyncio
@@ -685,7 +696,7 @@ async def test_init_undecodable_blob_alerts_instead_of_crashing(tmp_path):
         ws.feed(draft_ws.Init("short"))
         await app._poll()
         await pilot.pause()
-        assert app.banner.display
+        assert app.banner.showing
         assert app.banner.has_class("alert")
 
 
@@ -725,7 +736,74 @@ async def test_watchdog_alert_reaches_the_banner(tmp_path):
         ws.alerts.append("no frames received in 45s -- forcing reconnect")
         await app._poll()
         await pilot.pause()
+        assert app.banner.showing
+
+
+@pytest.mark.asyncio
+async def test_banner_row_is_reserved_but_invisible_when_idle(tmp_path):
+    """T65: the banner's row is always in the layout (`display` stays True)
+    -- only `visible` toggles when show()/hide() run. A regression back to
+    display:none would shift every panel below it the instant an alert
+    fires, which is exactly what reserving the row is meant to prevent."""
+    app, _, _ = make_app(tmp_path)
+    async with app.run_test():
         assert app.banner.display
+        assert not app.banner.visible
+
+
+@pytest.mark.asyncio
+async def test_banner_alert_does_not_shift_the_layout(tmp_path):
+    """T65: showing and dismissing an alert must not move #now-row (or
+    anything below it) -- the whole point of reserving the banner's row."""
+    app, ws, _ = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        now_row = app.query_one("#now-row")
+        idle_y = now_row.region.y
+        ws.alerts.append("no frames received in 45s -- forcing reconnect")
+        await app._poll()
+        await pilot.pause()
+        assert app.banner.showing
+        assert now_row.region.y == idle_y
+        await pilot.press("escape")
+        await pilot.pause()
+        assert not app.banner.showing
+        assert now_row.region.y == idle_y
+
+
+@pytest.mark.asyncio
+async def test_banner_height_stays_one_row_for_a_long_alert(tmp_path):
+    """T65: #banner is fixed to one row (ws_console.tcss) -- even the
+    longest alert in the console (the SOLD-conflict path) must not grow it,
+    which is what the old height: auto banner used to do."""
+    app, ws, state = make_app(tmp_path)
+    state.record_pick("Bijan Robinson", "RB", 40, "HH", espn_pick_id=9999999)
+    async with app.run_test() as pilot:
+        ws.feed(draft_ws.Sold(4, 3915511, 1, 54, 0))    # Bijan Robinson, different team/price
+        await app._poll()
+        await pilot.pause()
+        assert app.banner.showing
+        assert app.banner.size.height == 1
+
+
+@pytest.mark.asyncio
+async def test_banner_truncates_a_long_alert_with_an_ellipsis(tmp_path):
+    """T65: shortening the alert strings keeps most of them on one line, but
+    truncation is the backstop -- at a standard 80-column terminal the
+    SOLD-conflict banner still overflows, and CSS text-overflow: ellipsis
+    (not hand-rolled truncation) is what's expected to catch it.
+    `banner.content` still holds the full, untruncated text (and the full
+    detail also reaches the bid log via _flash) -- only the on-screen row is
+    cut."""
+    app, ws, state = make_app(tmp_path)
+    state.record_pick("Bijan Robinson", "RB", 40, "HH", espn_pick_id=9999999)
+    async with app.run_test() as pilot:                 # default size (80, 24)
+        ws.feed(draft_ws.Sold(4, 3915511, 1, 54, 0))
+        await app._poll()
+        await pilot.pause()
+        rendered = app.banner.render_line(0).text
+        assert rendered.endswith("…")
+        assert "SOLD CONFLICT" in str(app.banner.content)
+        assert "may now be wrong" in "".join(line.text for line in app.bidlog.lines)
 
 
 @pytest.mark.asyncio
@@ -737,7 +815,7 @@ async def test_roster_panel_tracks_budget_and_slots(tmp_path):
         await pilot.pause()
         assert app.roster.budget_left == 148
         assert app.roster.spots_left == 15
-        assert ("Justin Jefferson", "WR", "MIN", "T1", "-", "$52", "310", "$52", "+0") in _roster_rows(app)
+        assert ("Justin Jefferson", "WR", "MIN", "T1", "-", "310", "$52", "$52", "+0") in _roster_rows(app)
         assert ("WR", 1, 2, 5) in app.roster.slots
         assert ("QB", 0, 2, 3) in app.roster.slots
 
@@ -763,8 +841,8 @@ async def test_roster_table_keeps_every_player_as_the_roster_grows(tmp_path):
             await pilot.pause()
         rows = _roster_rows(app)
         assert len(rows) == 4
-        assert ("Amon-Ra St. Brown", "WR", "-", "-", "-", "$46", "-", "-", "-") in rows
-        assert ("Justin Jefferson", "WR", "MIN", "T1", "-", "$36", "310", "$52", "+16") in rows
+        assert ("Amon-Ra St. Brown", "WR", "-", "-", "-", "-", "-", "$46", "-") in rows
+        assert ("Justin Jefferson", "WR", "MIN", "T1", "-", "310", "$52", "$36", "+16") in rows
 
 
 @pytest.mark.asyncio
@@ -1056,7 +1134,7 @@ async def test_selecting_another_team_repoints_the_roster(tmp_path):
         app.team_list.move_cursor(row=app._team_rows.index("CCT"))
         await pilot.pause()
         assert app.selected_team == "CCT"
-        assert ("Bijan Robinson", "RB", "ATL", "T2", "-", "$43", "300", "$43", "+0") in _roster_rows(app)
+        assert ("Bijan Robinson", "RB", "ATL", "T2", "-", "300", "$43", "$43", "+0") in _roster_rows(app)
         assert app.roster.budget_left == state.budget_left("CCT")
 
 
@@ -1334,7 +1412,7 @@ async def test_nomination_rejection_alerts_with_the_player_name(tmp_path):
                                    "(player ID 3915514, bid amount 1)."))
         await app._poll()
         await pilot.pause()
-        assert app.banner.display
+        assert app.banner.showing
         assert app.banner.has_class("alert")
         assert "Justin Jefferson" in str(app.banner.content)
         assert "turn is still open" in str(app.banner.content)
@@ -1355,7 +1433,7 @@ async def test_nominating_clears_the_turn_alert_immediately(tmp_path):
         await pilot.press("n")
         await pilot.pause()
         assert not app.screen.has_class("my-turn")
-        assert not app.banner.display
+        assert not app.banner.showing
 
 
 @pytest.mark.asyncio
@@ -1427,7 +1505,7 @@ async def test_your_nomination_turn_raises_the_banner(tmp_path):
         ws.feed(draft_ws.Nomination(6, 25000))
         await app._poll()
         await pilot.pause()
-        assert app.banner.display
+        assert app.banner.showing
         assert app.screen.has_class("my-turn")
 
 
@@ -1451,14 +1529,14 @@ async def test_a_watchdog_alert_survives_an_unrelated_nomination(tmp_path):
         ws.alerts.append("no frames received in 45s -- forcing reconnect")
         await app._poll()
         await pilot.pause()
-        assert app.banner.display
+        assert app.banner.showing
         assert app.banner.has_class("alert")
         # Someone else's nomination fires constantly during a live draft and
         # must not silently wipe a live alert before it can be read.
         ws.feed(draft_ws.Nomination(7, 25000))
         await app._poll()
         await pilot.pause()
-        assert app.banner.display
+        assert app.banner.showing
         assert app.banner.has_class("alert")
 
 
@@ -1469,11 +1547,11 @@ async def test_a_watchdog_alert_survives_a_sold_event(tmp_path):
         ws.alerts.append("no frames received in 45s -- forcing reconnect")
         await app._poll()
         await pilot.pause()
-        assert app.banner.display
+        assert app.banner.showing
         ws.feed(draft_ws.Sold(4, 3915511, 1, 54, 0))
         await app._poll()
         await pilot.pause()
-        assert app.banner.display
+        assert app.banner.showing
         assert app.banner.has_class("alert")
 
 
@@ -1522,13 +1600,13 @@ async def test_disconnect_banner_clears_once_reconnected(tmp_path):
         ws.alerts.append(f"{draft_ws.DISCONNECT_ALERT_PREFIX} -- reconnecting (attempt 1)")
         await app._poll()
         await pilot.pause()
-        assert app.banner.display
+        assert app.banner.showing
         assert app.banner.has_class("alert")
 
         ws.connected = True
         await app._poll()
         await pilot.pause()
-        assert not app.banner.display
+        assert not app.banner.showing
 
 
 @pytest.mark.asyncio
@@ -1546,7 +1624,7 @@ async def test_disconnect_banner_does_not_wipe_a_later_alert_on_reconnect(tmp_pa
         ws.connected = True
         await app._poll()
         await pilot.pause()
-        assert app.banner.display
+        assert app.banner.showing
         assert app.banner.has_class("alert")
 
 
@@ -1566,12 +1644,12 @@ async def test_banner_queues_a_second_alert_instead_of_erasing_the_first(tmp_pat
         assert "more" in str(banner.content)
 
         banner.dismiss()
-        assert banner.display
+        assert banner.showing
         assert "first alert" in str(banner.content)
         assert "more" not in str(banner.content)
 
         banner.dismiss()
-        assert not banner.display
+        assert not banner.showing
 
 
 @pytest.mark.asyncio
@@ -1589,7 +1667,7 @@ async def test_banner_collapses_repeated_identical_alerts(tmp_path):
         assert "(x3)" in str(banner.content)
         assert "more" not in str(banner.content)
         banner.dismiss()
-        assert not banner.display
+        assert not banner.showing
 
         # A repeat while something else is showing merges into the queued
         # entry instead of piling up behind it as a second one.
@@ -1615,7 +1693,7 @@ async def test_clear_disconnect_purges_a_queued_disconnect_alert(tmp_path):
         banner.show("watchdog trip", alert=True)
         banner.clear_disconnect()
         banner.dismiss()
-        assert not banner.display      # the queued disconnect alert is gone, not revealed
+        assert not banner.showing      # the queued disconnect alert is gone, not revealed
 
 
 @pytest.mark.asyncio
@@ -1625,10 +1703,10 @@ async def test_escape_dismisses_the_current_banner_in_the_running_app(tmp_path):
         ws.alerts.append("no frames received in 45s -- forcing reconnect")
         await app._poll()
         await pilot.pause()
-        assert app.banner.display
+        assert app.banner.showing
         await pilot.press("escape")
         await pilot.pause()
-        assert not app.banner.display
+        assert not app.banner.showing
 
 
 @pytest.mark.asyncio
@@ -1642,7 +1720,7 @@ async def test_escape_does_not_dismiss_while_the_command_line_has_focus(tmp_path
         app.command.focus()
         await pilot.press("escape")
         await pilot.pause()
-        assert app.banner.display
+        assert app.banner.showing
 
 
 @pytest.mark.asyncio
@@ -1667,7 +1745,7 @@ async def test_escape_closes_the_command_line(tmp_path):
         assert app.nominations.has_focus
         # The command line was the more modal thing open -- a still-showing
         # banner from before it opened has to survive closing it.
-        assert app.banner.display
+        assert app.banner.showing
 
 
 @pytest.mark.asyncio
@@ -2106,7 +2184,7 @@ async def test_a_nomination_turn_does_not_steal_focus_from_an_open_command(tmp_p
         # The turn alert still fires, but must not pull focus off the command
         # input the user was mid-way through typing into.
         assert app.command.has_focus
-        assert app.banner.display
+        assert app.banner.showing
 
 
 @pytest.mark.asyncio
@@ -2192,7 +2270,7 @@ async def test_b_shows_the_banner_and_does_not_crash_when_the_drain_raises(tmp_p
         await pilot.press("b")
         await pilot.pause()
         assert app.is_running
-        assert app.banner.display
+        assert app.banner.showing
         assert app.banner.has_class("alert")
         assert "LIVE FEED ERROR" in str(app.banner.content)
         assert any("LIVE FEED ERROR" in str(line) for line in app.bidlog.lines)
@@ -2209,7 +2287,7 @@ async def test_sold_flags_a_mismatched_duplicate_loudly(tmp_path):
         ws.feed(draft_ws.Sold(4, 3915511, 1, 54, 0))    # Bijan Robinson, different team/price
         await app._poll()
         await pilot.pause()
-        assert app.banner.display
+        assert app.banner.showing
         # The flashed message is long enough to wrap across several bid log
         # rows at the panel's width, so check the joined plain text rather
         # than one row at a time -- collapsing whitespace first, since the
@@ -2228,7 +2306,7 @@ async def test_sold_stays_quiet_for_a_genuine_matching_duplicate(tmp_path):
         ws.feed(draft_ws.Sold(4, 3915511, 1, 54, 0))    # same team, same price
         await app._poll()
         await pilot.pause()
-        assert not app.banner.display
+        assert not app.banner.showing
         assert "already recorded by hand" in "".join(line.text for line in app.bidlog.lines)
 
 
@@ -2248,9 +2326,9 @@ async def test_bid_watchdog_alerts_when_a_sent_bid_never_gets_confirmed(tmp_path
                                high_bid_amount=40))       # still $40, our $41 never landed
         await app._poll()
         await pilot.pause()
-        # banner.display reads back False once the app has torn down, so
+        # banner.showing reads back False once the app has torn down, so
         # check it before the `async with` block exits.
-        assert app.banner.display
+        assert app.banner.showing
         assert app._pending_bid is None                  # alerts once, doesn't keep spamming
         lines_after_alert = len(app.bidlog.lines)
         # A second check with nothing pending must not write another alert.
@@ -2285,7 +2363,7 @@ async def test_bid_watchdog_does_not_fire_on_a_bid_that_landed_then_got_outbid(t
         await app._poll()
         await pilot.pause()
         app._check_bid_watchdog()
-        assert not app.banner.display
+        assert not app.banner.showing
     assert not any("was not accepted" in str(line) for line in app.bidlog.lines)
 
 
@@ -2323,7 +2401,7 @@ async def test_watchdog_confirms_a_bid_when_my_team_label_diverges_from_config(t
         ws.feed(draft_ws.Bid(6, 3915511, 41, 25000, 12000))   # server confirms it: team 6 is us
         await app._poll()
         await pilot.pause()
-        assert not app.banner.display
+        assert not app.banner.showing
     assert app._pending_bid is None
 
 
@@ -2345,7 +2423,7 @@ async def test_bid_watchdog_fires_on_total_socket_silence(tmp_path):
         # No new events fed at all -- the queue stays empty.
         await app._poll()
         await pilot.pause()
-        assert app.banner.display
+        assert app.banner.showing
     assert any("was not accepted" in str(line) for line in app.bidlog.lines)
 
 
@@ -2361,9 +2439,9 @@ async def test_bid_watchdog_clears_when_the_bid_is_confirmed(tmp_path):
         ws.feed(draft_ws.Bid(6, 3915511, 41, 25000, 12000))   # server confirms it: team 6 is us
         await app._poll()
         await pilot.pause()
-        # banner.display reads back False once the app has torn down
+        # banner.showing reads back False once the app has torn down
         # regardless of alert state, so check it before the block exits.
-        assert not app.banner.display
+        assert not app.banner.showing
     assert app._pending_bid is None
 
 
@@ -2384,7 +2462,7 @@ async def _fire_watchdog(app, ws, pilot) -> None:
                            high_bid_amount=40))       # still $40, our $41 never landed
     await app._poll()
     await pilot.pause()
-    assert app.banner.display
+    assert app.banner.showing
     assert app._rejected_bid is not None
 
 
@@ -2396,7 +2474,7 @@ async def test_watchdog_banner_auto_dismisses_once_someone_else_bids_higher(tmp_
         ws.feed(draft_ws.Bid(3, 3915511, 45, 25000, 11000))    # team 3, same player, higher
         await app._poll()
         await pilot.pause()
-        assert not app.banner.display
+        assert not app.banner.showing
         assert app._rejected_bid is None
 
 
@@ -2408,7 +2486,7 @@ async def test_watchdog_banner_survives_a_bid_that_is_not_higher(tmp_path):
         ws.feed(draft_ws.Bid(3, 3915511, 40, 25000, 11000))    # same amount, not higher
         await app._poll()
         await pilot.pause()
-        assert app.banner.display
+        assert app.banner.showing
 
 
 @pytest.mark.asyncio
@@ -2419,7 +2497,7 @@ async def test_watchdog_banner_survives_a_higher_bid_on_a_different_player(tmp_p
         ws.feed(draft_ws.Bid(3, 3915514, 45, 25000, 11000))    # different player entirely
         await app._poll()
         await pilot.pause()
-        assert app.banner.display
+        assert app.banner.showing
 
 
 @pytest.mark.asyncio
@@ -2463,7 +2541,7 @@ async def test_roster_nfl_column_shows_the_pro_team_or_a_dash(tmp_path):
         app._refresh_panels()
         await pilot.pause()
     rows = _roster_rows(app)
-    assert ("Justin Jefferson", "WR", "MIN", "T1", "-", "$52", "310", "$52", "+0") in rows
+    assert ("Justin Jefferson", "WR", "MIN", "T1", "-", "310", "$52", "$52", "+0") in rows
     assert any(row[0] == "Undrafted Kicker" and row[2] == "-" for row in rows)
 
 
