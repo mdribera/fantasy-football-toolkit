@@ -177,6 +177,11 @@ def _ramp_style(fraction: float) -> str:
     return f"#{red:02x}{green:02x}00"
 
 
+# config's key stays "D/ST"; only the printed label shortens to fit one line.
+# Shared by DraftCounts and RosterPanel so both position rows agree on width.
+_DISPLAY_POS = {"D/ST": "DST"}
+
+
 class DraftCounts(Static):
     """Leaguewide positional draft counts -- the same have/target read
     RosterPanel already gives per team, summed across all ten. Printed
@@ -189,13 +194,10 @@ class DraftCounts(Static):
 
     counts = reactive(())   # tuple[tuple[pos, drafted, demand, target], ...]
 
-    _DISPLAY_POS = {"D/ST": "DST"}   # config's key stays "D/ST"; only the
-                                      # printed label shortens to fit one line
-
     def _pos_cell(self, pos: str, drafted: int, demand: int, target: int) -> str:
         fraction = drafted / target if target else 0.0
         style = _ramp_style(fraction)
-        label = self._DISPLAY_POS.get(pos, pos)
+        label = _DISPLAY_POS.get(pos, pos)
         return f"[{style}]{label:<3}{drafted:>2}/{demand:<2}[/{style}]"
 
     def render(self) -> Text:
@@ -273,44 +275,61 @@ class TeamList(DataTable):
 
 class RosterPanel(Static):
     """Budget and starting-slot summary for whichever team is selected in
-    TeamList -- two logical lines, which may wrap within the panel's width
+    TeamList -- three logical lines, which may wrap within the panel's width
     as the slot hints grow, but never grow in *count*. The player list lives
     in the sibling RosterTable instead: an ever-growing list of names is
     exactly the shape of content a plain Static's "auto" height doesn't
     reliably keep up with once it's already mounted, which is what clipped
-    the roster panel before (see T20)."""
+    the roster panel before (see T20). `plan_left` is the one reactive
+    declared with `layout=True`: it forces a re-measure on every update, which
+    is what lets the auto height keep pace with the dollar cells widening
+    (e.g. a position going from a positive balance to a negative one) even
+    though the plain reactives around it don't trigger that on their own.
+
+    The third line is T67's budget-allocation read: dollars still available in
+    each position's plan share (`values.budget_plan`), lined up under that
+    position's slot count rather than repeating its label. It intentionally
+    doesn't reconcile with the `Budget: $X / $200` total on line one -- the
+    plan only allocates about $187 of the $200 cap, leaving room for the
+    bidding wars `docs/auction-strategy.md` expects."""
 
     budget_left = reactive(config.SALARY_CAP)
     spots_left = reactive(config.ROSTER_SIZE)
     max_bid_amount = reactive(0)
     slots = reactive(())    # tuple[tuple[str, int, int, int], ...] pos, have, need, target
-    bye_clash = reactive(None)   # bye week two rostered QBs share, or None
+    plan_left = reactive((), layout=True)  # tuple[tuple[str, int, int], ...] pos, remaining, subtotal
 
-    def _slot_label(self, pos: str, have: int, need: int, target: int) -> str:
-        # A starting requirement met is not the same as a full bench -- QB
-        # especially, where the third quarterback exists for byes and the
-        # in-season waiver wire is empty, so this can't collapse to a single
-        # met/unmet color the way needs() alone would suggest. Same
-        # continuous ramp as DraftCounts' position counters and TeamList's
-        # budget column, colored on progress toward the full bench target
-        # rather than a single met/unmet split. Exact counts toward the
-        # target live on `:me`'s footer, not here.
-        fraction = have / target if target else 0.0
-        color = _ramp_style(fraction)
-        label = f"{pos} {have}/{need}"
-        if pos == "QB" and self.bye_clash is not None:
-            color = "red"
-            label += f" bye clash wk{self.bye_clash}!"
-        return f"[{color}]{label}[/]"
+    def _slot_cells(self, pos: str, have: int, need: int, target: int,
+                     remaining: int, subtotal: int) -> tuple[str, str]:
+        # Built together, not separately, because the count cell and the
+        # dollar cell below it share a column width -- measured on the plain
+        # text before either gets its own color, since the two ramps disagree
+        # (roster-progress green means "full"; plan-dollars green means
+        # "untouched") and a shared style would misread one of them.
+        label = _DISPLAY_POS.get(pos, pos)
+        count_text = f"{label} {have}/{need}"
+        count_color = _ramp_style(have / target if target else 0.0)
+
+        dollar_text = f"-${-remaining}" if remaining < 0 else f"${remaining}"
+        dollar_color = _ramp_style(remaining / subtotal if subtotal else 0.0)
+
+        width = max(len(count_text), len(dollar_text))
+        return (
+            f"[{count_color}]{count_text:<{width}}[/]",
+            f"[{dollar_color}]{dollar_text:<{width}}[/]",
+        )
 
     def render(self) -> Text:
+        cells = [
+            self._slot_cells(pos, have, need, target, remaining, subtotal)
+            for (pos, have, need, target), (_, remaining, subtotal)
+            in zip(self.slots, self.plan_left)
+        ]
         lines = [
             f"[bold]Budget: ${self.budget_left}[/bold] / ${config.SALARY_CAP}   "
             f"{self.spots_left} spots   max bid ${self.max_bid_amount}",
-            " [dim]|[/dim] ".join(
-                self._slot_label(pos, have, need, target)
-                for pos, have, need, target in self.slots
-            ) or "[dim]no starters required[/dim]",
+            " [dim]|[/dim] ".join(c for c, _ in cells) or "[dim]no starters required[/dim]",
+            "   ".join(d for _, d in cells) or "[dim]no plan[/dim]",
         ]
         return Text.from_markup("\n".join(lines))
 
@@ -403,6 +422,7 @@ class TextualWsApp(App):
         self.starred: set[str] = set(nomination_list)
         self.nomination_list_path = nomination_list_path
         self.lookup = {v.name.lower(): v for v in vals}
+        self.plan = values.budget_plan(vals)
         self.sounds = sounds.SoundPlayer()
         self._log_player_id: int | None = None
         self._last_bid_team = ""
@@ -895,6 +915,7 @@ class TextualWsApp(App):
     def _refresh_roster(self) -> None:
         team = self.selected_team
         counts = self.state.position_counts(team)
+        spend = self.state.position_spend(team)
         self.roster.budget_left = self.state.budget_left(team)
         self.roster.spots_left = self.state.spots_left(team)
         self.roster.max_bid_amount = self.state.max_bid(team)
@@ -904,7 +925,12 @@ class TextualWsApp(App):
             for pos, required in config.STARTERS.items()
             if pos != "FLEX"
         )
-        self.roster.bye_clash = auction.rostered_qb_bye_clash(self.state, team, self.vals)
+        self.roster.plan_left = tuple(
+            (pos, self.plan.get(pos, {}).get("subtotal", 0) - spend.get(pos, 0),
+             self.plan.get(pos, {}).get("subtotal", 0))
+            for pos, required in config.STARTERS.items()
+            if pos != "FLEX"
+        )
         self.roster_table.clear()
         for p in self.state.purchases:
             if p.team != team:

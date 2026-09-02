@@ -170,6 +170,26 @@ def test_position_counts_with_no_team_sums_across_the_whole_league():
     assert state.position_counts() == {"QB": 2, "RB": 1}
 
 
+def test_position_spend_sums_prices_for_one_team():
+    """T67: the Roster panel's plan-dollars row reads this per position, so
+    it has to sum price, not count, and stay scoped to the requested team."""
+    state = draft_state.DraftState(my_team="ME")
+    state.record("Josh Allen", "QB", 60, "ME")
+    state.record("Lamar Jackson", "QB", 40, "ME")
+    state.record("Bijan Robinson", "RB", 54, "RIVAL")
+
+    assert state.position_spend("ME") == {"QB": 100}
+
+
+def test_position_spend_with_no_team_sums_across_the_whole_league():
+    state = draft_state.DraftState(my_team="ME")
+    state.record("Josh Allen", "QB", 60, "ME")
+    state.record("Lamar Jackson", "QB", 40, "RIVAL")
+    state.record("Bijan Robinson", "RB", 54, "RIVAL")
+
+    assert state.position_spend() == {"QB": 100, "RB": 54}
+
+
 def test_forward_inflation_by_position_omits_positions_with_no_sales():
     """No sales at a position means no backward signal to tilt by --
     callers fall back to the plain forward rate for it, mirroring

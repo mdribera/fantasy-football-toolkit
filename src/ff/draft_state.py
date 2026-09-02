@@ -257,6 +257,15 @@ class DraftState:
                 counts[p.position] = counts.get(p.position, 0) + 1
         return counts
 
+    def position_spend(self, team: str | None = None) -> dict[str, int]:
+        """Dollars spent by `team` at each position, or leaguewide when team
+        is None."""
+        spend: dict[str, int] = {}
+        for p in self.purchases:
+            if team is None or p.team == team:
+                spend[p.position] = spend.get(p.position, 0) + p.price
+        return spend
+
     def needs(self, team: str) -> dict[str, int]:
         """Starting slots still unfilled."""
         counts = self.position_counts(team)

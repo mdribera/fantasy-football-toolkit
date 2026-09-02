@@ -12,6 +12,7 @@ import json
 import struct
 
 import pytest
+from rich.text import Text
 
 import auction
 import ws_console
@@ -903,36 +904,120 @@ async def test_roster_header_colors_by_need_and_target(tmp_path):
         assert "QB 2/2" in text
         assert "3rd for byes" not in text
         assert "want" not in text
-        assert app.roster._slot_label("QB", 0, 2, 3) == f"[{ws_console._ramp_style(0/3)}]QB 0/2[/]"
-        assert app.roster._slot_label("QB", 2, 2, 3) == f"[{ws_console._ramp_style(2/3)}]QB 2/2[/]"
-        assert app.roster._slot_label("QB", 3, 2, 3) == f"[{ws_console._ramp_style(3/3)}]QB 3/2[/]"
+        # Count-cell text is at least as wide as its plan-dollars counterpart
+        # for every case here, so the shared column width never pads it --
+        # the cell renders exactly as the old single-line label did.
+        assert app.roster._slot_cells("QB", 0, 2, 3, 0, 0)[0] == f"[{ws_console._ramp_style(0/3)}]QB 0/2[/]"
+        assert app.roster._slot_cells("QB", 2, 2, 3, 0, 0)[0] == f"[{ws_console._ramp_style(2/3)}]QB 2/2[/]"
+        assert app.roster._slot_cells("QB", 3, 2, 3, 0, 0)[0] == f"[{ws_console._ramp_style(3/3)}]QB 3/2[/]"
 
 
 @pytest.mark.asyncio
 async def test_roster_header_separates_slots_with_a_divider(tmp_path):
     """T63: same literal "|" divider as DraftCounts, between adjacent slot
-    labels on the roster header's second line."""
+    labels on the roster header's counts line."""
     app, ws, _ = make_app(tmp_path)
     async with app.run_test() as pilot:
         app._refresh_panels()
         await pilot.pause()
-        _, slot_line = str(app.roster.render()).split("\n")
-        assert "|" in slot_line
+        _, count_line, _ = str(app.roster.render()).split("\n")
+        assert "|" in count_line
 
 
 @pytest.mark.asyncio
-async def test_roster_header_flags_a_qb_bye_clash(tmp_path):
-    """T8: two rostered QBs sharing a bye defeats the whole point of
-    carrying a third one -- the roster header has to say so, not just the
-    starting-slot count."""
-    app, ws, state = make_app(tmp_path, rows=QB_FIXTURE_ROWS)
-    state.record("Josh Allen", "QB", 60, "ME")
-    state.record("Lamar Jackson", "QB", 40, "ME")   # same bye week, 7
+async def test_roster_header_counts_and_plan_cells_share_widths(tmp_path):
+    """T67: the plan-dollars row sits directly under the counts row with no
+    position label of its own, which only reads as one unit per position if
+    the two cells actually share a column width."""
+    app, ws, state = make_app(tmp_path)
+    state.record("Bijan Robinson", "RB", 30, "ME")
     async with app.run_test() as pilot:
         app._refresh_panels()
         await pilot.pause()
+        for (pos, have, need, target), (_, remaining, subtotal) in zip(
+                app.roster.slots, app.roster.plan_left):
+            count_cell, dollar_cell = app.roster._slot_cells(
+                pos, have, need, target, remaining, subtotal)
+            assert len(Text.from_markup(count_cell).plain) == len(Text.from_markup(dollar_cell).plain)
+
+
+@pytest.mark.asyncio
+async def test_roster_plan_left_starts_at_the_full_subtotal(tmp_path):
+    """T67: with nothing bought yet, every position's plan balance equals its
+    full share of the budget plan -- no money has left the plan."""
+    app, ws, _ = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        app._refresh_panels()
+        await pilot.pause()
+        plan_left = {pos: (remaining, subtotal) for pos, remaining, subtotal in app.roster.plan_left}
+        assert plan_left["RB"] == (app.plan["RB"]["subtotal"], app.plan["RB"]["subtotal"])
+        assert plan_left["WR"] == (app.plan["WR"]["subtotal"], app.plan["WR"]["subtotal"])
+
+
+@pytest.mark.asyncio
+async def test_roster_plan_left_drops_by_the_purchase_price(tmp_path):
+    app, ws, state = make_app(tmp_path)
+    state.record("Bijan Robinson", "RB", 30, "ME")
+    async with app.run_test() as pilot:
+        app._refresh_panels()
+        await pilot.pause()
+        remaining = {pos: r for pos, r, _ in app.roster.plan_left}["RB"]
+        assert remaining == app.plan["RB"]["subtotal"] - 30
+
+
+@pytest.mark.asyncio
+async def test_roster_header_renders_an_overspent_position_as_negative(tmp_path):
+    """Buying past a position's plan share must read as "-$N", never the
+    unreadable "$-N" a bare f-string would produce."""
+    app, ws, state = make_app(tmp_path)
+    state.record("Bijan Robinson", "RB", 60, "ME")
+    state.record("Kenneth Walker III", "RB", 60, "ME")
+    async with app.run_test() as pilot:
+        app._refresh_panels()
+        await pilot.pause()
+        remaining = app.plan["RB"]["subtotal"] - 120
+        assert remaining < 0
         text = str(app.roster.render())
-        assert "bye clash wk7" in text
+        assert f"-${-remaining}" in text
+        assert f"${remaining}" not in text
+
+
+@pytest.mark.asyncio
+async def test_roster_header_handles_a_position_with_no_priced_pool(tmp_path):
+    """FIXTURE_ROWS carries no QB, TE, D/ST or K, so budget_plan gives those
+    a $0 subtotal -- the remaining/subtotal ramp fraction must not divide by
+    zero, and the position still has to show up as $0 rather than vanish."""
+    app, ws, _ = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        app._refresh_panels()
+        await pilot.pause()
+        assert app.plan["QB"]["subtotal"] == 0
+        text = str(app.roster.render())
+        assert "QB" in text
+        assert "$0" in text
+
+
+@pytest.mark.asyncio
+async def test_roster_table_region_survives_an_overspent_position(tmp_path):
+    """Regression guard for T20 now that RosterPanel renders a third line:
+    an overspent position's wider "-$N" text must still be measured
+    correctly (the `layout=True` reactive is what makes this happen -- see
+    RosterPanel's docstring), rather than freezing the header's auto height
+    at a stale, narrower measurement and clipping the roster table below it.
+    Same 120x40 width `test_drafted_pane_left_border_aligns_with_the_roster_box`
+    already uses for this neighborhood, since this panel's fixed-width
+    siblings (TeamList, BidLog, SaleLog) leave it little room at 80 columns
+    regardless of what it renders."""
+    app, ws, state = make_app(tmp_path)
+    async with app.run_test(size=(120, 40)) as pilot:
+        state.record("Bijan Robinson", "RB", 60, "ME")
+        state.record("Kenneth Walker III", "RB", 60, "ME")   # pushes RB negative
+        app._refresh_panels()
+        await pilot.pause()
+        header = app.query_one("#roster-header")
+        table = app.query_one("#roster-table")
+        assert 3 <= header.region.height <= 12
+        assert table.region.height > 0
 
 
 @pytest.mark.asyncio
