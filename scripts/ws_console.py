@@ -517,7 +517,13 @@ class TextualWsApp(App):
         if self.ws.pointer.player_id != self._log_player_id:
             self.bidlog.clear()
             if self.ws.pointer.player_id is not None:
-                self.sounds.play("nominated")
+                name, _ = self.resolver.resolve(self.ws.pointer.player_id)
+                match = self.lookup.get(name.lower())
+                # An unpriced/unresolvable player has no position to check
+                # need against -- stay noisy rather than go quiet on a
+                # player we simply don't have data for.
+                if match is None or self.state.needs_starter(self.state.my_team, match.position):
+                    self.sounds.play("nominated")
             self._log_player_id = self.ws.pointer.player_id
             self.status.clock_s = 0
             self._last_bid_team = ""

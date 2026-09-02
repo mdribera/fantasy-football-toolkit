@@ -2422,6 +2422,36 @@ async def test_the_nominated_sound_does_not_fire_when_the_nomination_clears(tmp_
     assert app.sounds.played == []
 
 
+# --- T60: need condition on the nominated cue -----------------------------
+
+@pytest.mark.asyncio
+async def test_the_nominated_sound_does_not_fire_for_a_covered_position(tmp_path):
+    """Two quarterbacks already rostered meets QB's starting requirement --
+    a third QB coming up on the clock isn't worth a nudge."""
+    app, ws, state = make_app(tmp_path, rows=QB_FIXTURE_ROWS)
+    app.sounds = FakeSoundPlayer()
+    state.record("Josh Allen", "QB", 60, "ME")
+    state.record("Lamar Jackson", "QB", 50, "ME")
+    async with app.run_test() as pilot:
+        ws.feed(draft_ws.Bid(4, 4426348, 1, 25000, 25000))   # Jayden Daniels, QB
+        await app._poll()
+        await pilot.pause()
+    assert app.sounds.played == []
+
+
+@pytest.mark.asyncio
+async def test_the_nominated_sound_still_fires_for_an_unresolvable_player(tmp_path):
+    """No Sheet entry means no position to check need against -- stay noisy
+    rather than go quiet on a player we simply have no data for."""
+    app, ws, _ = make_app(tmp_path)
+    app.sounds = FakeSoundPlayer()
+    async with app.run_test() as pilot:
+        ws.feed(draft_ws.Bid(4, 999999, 1, 25000, 25000))
+        await app._poll()
+        await pilot.pause()
+    assert app.sounds.played == ["nominated"]
+
+
 @pytest.mark.asyncio
 async def test_five_second_cue_fires_when_outbid_and_under_sheet(tmp_path):
     """Justin Jefferson's Sheet value is $52 (FIXTURE_ROWS); a $30 high bid
