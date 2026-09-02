@@ -145,7 +145,7 @@ def _stub_no_read(state) -> None:
 
 def _roster_rows(app) -> list[tuple]:
     """Every row currently in the roster DataTable, as plain-text tuples --
-    str() rather than a bare tuple() so a colored Value cell (a rich.Text,
+    str() rather than a bare tuple() so a colored Edge cell (a rich.Text,
     for the Sheet-minus-Paid column) compares equal to a plain string just
     like every other cell."""
     return [tuple(str(cell) for cell in app.roster_table.get_row_at(i))
@@ -230,6 +230,17 @@ async def test_app_mounts_every_panel(tmp_path):
         assert app.query_one("#roster-header", ws_console.RosterPanel)
         assert app.query_one("#roster-table", ws_console.RosterTable)
         assert app.query_one("#nominations", ws_console.NominationTable) is not None
+
+
+@pytest.mark.asyncio
+async def test_roster_table_names_its_sheet_minus_paid_column_edge(tmp_path):
+    """T62: renamed from "Value" to match SaleLog and NominationTable, which
+    already call the same Sheet-minus-paid comparison Edge."""
+    app, _, _ = make_app(tmp_path)
+    async with app.run_test():
+        headers = [str(c.label) for c in app.roster_table.columns.values()]
+        assert "Edge" in headers
+        assert "Value" not in headers
 
 
 @pytest.mark.asyncio

@@ -325,7 +325,7 @@ class RosterTable(DataTable):
 
     def on_mount(self) -> None:
         self.cursor_type = "none"
-        self.add_columns("Player", "Pos", "NFL", "Tier", "Bye", "Paid", "Proj", "Sheet", "Value")
+        self.add_columns("Player", "Pos", "NFL", "Tier", "Bye", "Paid", "Proj", "Sheet", "Edge")
 
 
 class NominationTable(DataTable):
@@ -806,7 +806,7 @@ class TextualWsApp(App):
         """Sheet minus what was paid, colored -- positive is a bargain and
         reads green, negative red, unpriced dim. The same yardstick the
         board's Edge column already uses (_board_cells below), shared here
-        with RosterTable's Value column and SaleLog's Edge column."""
+        with RosterTable's Edge column and SaleLog's Edge column."""
         if diff is None:
             return Text("-", style="dim")
         style = "green" if diff > 0 else "red" if diff < 0 else "dim"
