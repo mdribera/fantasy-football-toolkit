@@ -1,3 +1,11 @@
+Screen {
+    /* Resting-state border, same weight as my-turn/over-max below, so an
+       alert only changes the border's color -- never whether the app has
+       one at all, which would otherwise shift the whole layout by its
+       width the instant an alert class lands. */
+    border: heavy $panel;
+}
+
 Screen.my-turn {
     border: heavy $warning;
 }
@@ -103,6 +111,10 @@ Screen.over-max {
 
 ConfirmBidScreen {
     align: center middle;
+    /* Textual's Screen type selector matches every subclass, including
+       this modal -- without this it would inherit the resting border on
+       top of #confirm-dialog's own, doubling up. */
+    border: none;
 }
 
 #confirm-dialog {

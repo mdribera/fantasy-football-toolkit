@@ -187,6 +187,23 @@ async def test_nominations_has_a_minimum_height_floor(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_resting_screen_border_matches_the_alert_borders_width(tmp_path):
+    """T58: the resting border has to be the same edge type as my-turn's and
+    over-max's, or gaining one of those classes shifts the whole layout by
+    the width difference instead of just changing the border's color."""
+    app, _, _ = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        resting_edge = app.screen.styles.border_top[0]
+        app.screen.add_class("my-turn")
+        await pilot.pause()
+        assert app.screen.styles.border_top[0] == resting_edge
+        app.screen.remove_class("my-turn")
+        app.screen.add_class("over-max")
+        await pilot.pause()
+        assert app.screen.styles.border_top[0] == resting_edge
+
+
+@pytest.mark.asyncio
 async def test_drafted_pane_left_border_aligns_with_the_roster_box(tmp_path):
     """T46: DRAFTED mirrors #middle's bidlog+salelog-vs-roster split (2fr and
     2fr), so its left border lands on the Teams/Roster box below it --
