@@ -84,6 +84,18 @@ class Banner(Static):
         else:
             self.hide()
 
+    def clear_message(self, message: str) -> None:
+        """Drop one alert by exact message text, wherever it is -- showing
+        now, or still waiting behind something else -- for an alert that
+        resolved itself before Mark got to `escape`: a watchdog "bid not
+        accepted" banner is moot the instant a later frame shows someone
+        else clearly holding the high bid. Same convention as
+        clear_disconnect(), keyed on the message instead of the disconnect
+        flag."""
+        self._queue = [item for item in self._queue if item[0] != message]
+        if self._current is not None and self._current[0] == message:
+            self.dismiss()
+
     def clear_disconnect(self) -> None:
         """Drop the disconnect alert specifically, wherever it is -- showing
         now, or still waiting behind something else -- so a healed
@@ -393,6 +405,7 @@ class TextualWsApp(App):
         self._last_bid_team = ""
         self._last_bid_team_id: int | None = None
         self._pending_bid: tuple[int, int, float] | None = None
+        self._rejected_bid: tuple[int, int, str] | None = None  # player_id, amount, banner message
         self._pending_nomination: tuple[int, str] | None = None
         self._init_backed_up = False  # back up draft-state.json once, before
                                        # the first INIT reconcile may prune it
@@ -509,6 +522,10 @@ class TextualWsApp(App):
             self.status.clock_s = 0
             self._last_bid_team = ""
             self._last_bid_team_id = None
+            # A rejection banner is only stale evidence about *this*
+            # nominee -- stop watching for a higher bid to retire it once
+            # the nomination it was about is over.
+            self._rejected_bid = None
 
         taken = {name.lower() for name in self.state.taken()}
 
@@ -529,6 +546,15 @@ class TextualWsApp(App):
                 self._note_bid_confirmation(event.player_id, event.team_id, event.amount)
                 name, _ = self.resolver.resolve(event.player_id)
                 self._flash(f"{team:<7} ${event.amount}  [dim]{name}[/dim]")
+                if (self._rejected_bid and event.player_id == self._rejected_bid[0]
+                        and event.team_id != config.MY_TEAM_ID
+                        and event.amount > self._rejected_bid[1]):
+                    # Someone else is now visibly ahead on the same player at
+                    # a higher price -- the earlier "not accepted" alert is
+                    # self-evidently moot and shouldn't keep sitting in the
+                    # banner queue until Mark dismisses it by hand.
+                    self.banner.clear_message(self._rejected_bid[2])
+                    self._rejected_bid = None
             elif isinstance(event, draft_ws.Clock) and event.state == 2:
                 self.status.clock_s = event.remaining_ms // 1000
                 self._last_bid_team = config.TEAMS.get(event.high_bid_team, self._last_bid_team)
@@ -669,6 +695,7 @@ class TextualWsApp(App):
             message = (f"Bid ${amount} was not accepted ({elapsed:.0f}s ago).")
             self.banner.show(message, alert=True)
             self._flash(f"[red]{message} (unconfirmed)[/red]")
+            self._rejected_bid = (player_id, amount, message)
             self._pending_bid = None                     # alert once, don't spam every poll
 
     def _sync_pointer(self) -> None:

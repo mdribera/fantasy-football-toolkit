@@ -2209,6 +2209,61 @@ async def test_bid_watchdog_clears_when_the_bid_is_confirmed(tmp_path):
     assert app._pending_bid is None
 
 
+# --- T57: stale watchdog banner auto-dismisses ----------------------------
+
+async def _fire_watchdog(app, ws, pilot) -> None:
+    """Send a bid, let it go unconfirmed, and drive the watchdog to fire --
+    the same setup as test_bid_watchdog_alerts_when_a_sent_bid_never_gets_
+    confirmed, factored out since three tests below all start from it."""
+    ws.feed(draft_ws.Bid(4, 3915511, 40, 25000, 12731))
+    await app._poll()
+    await pilot.pause()
+    await pilot.press("b")                          # sends BID 3915511 41
+    await pilot.pause()
+    player_id, amount, sent_at = app._pending_bid
+    app._pending_bid = (player_id, amount, sent_at - 100)  # backdate
+    ws.feed(draft_ws.Clock(2, 12000, high_bid_team=4, player_id=3915511,
+                           high_bid_amount=40))       # still $40, our $41 never landed
+    await app._poll()
+    await pilot.pause()
+    assert app.banner.display
+    assert app._rejected_bid is not None
+
+
+@pytest.mark.asyncio
+async def test_watchdog_banner_auto_dismisses_once_someone_else_bids_higher(tmp_path):
+    app, ws, _ = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await _fire_watchdog(app, ws, pilot)
+        ws.feed(draft_ws.Bid(3, 3915511, 45, 25000, 11000))    # team 3, same player, higher
+        await app._poll()
+        await pilot.pause()
+        assert not app.banner.display
+        assert app._rejected_bid is None
+
+
+@pytest.mark.asyncio
+async def test_watchdog_banner_survives_a_bid_that_is_not_higher(tmp_path):
+    app, ws, _ = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await _fire_watchdog(app, ws, pilot)
+        ws.feed(draft_ws.Bid(3, 3915511, 40, 25000, 11000))    # same amount, not higher
+        await app._poll()
+        await pilot.pause()
+        assert app.banner.display
+
+
+@pytest.mark.asyncio
+async def test_watchdog_banner_survives_a_higher_bid_on_a_different_player(tmp_path):
+    app, ws, _ = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await _fire_watchdog(app, ws, pilot)
+        ws.feed(draft_ws.Bid(3, 3915514, 45, 25000, 11000))    # different player entirely
+        await app._poll()
+        await pilot.pause()
+        assert app.banner.display
+
+
 @pytest.mark.asyncio
 async def test_board_rows_carry_tier_and_adjusted_value(tmp_path):
     app, ws, state = make_app(tmp_path)   # default starred: Justin Jefferson, Kenneth Walker III
