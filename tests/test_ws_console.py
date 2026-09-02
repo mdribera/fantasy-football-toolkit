@@ -323,6 +323,16 @@ def test_draft_counts_render_puts_all_six_positions_on_one_line():
     assert len(lines[0]) <= 56
 
 
+def test_draft_counts_separates_positions_with_a_divider():
+    """T63: a bare space between two adjacent counts runs together once the
+    color ramp shifts both cells to similar hues -- a literal "|" divider
+    (Mark's own wording), not padded with spaces, to stay inside the
+    56-column budget above."""
+    widget = ws_console.DraftCounts()
+    widget.counts = (("QB", 5, 20, 30), ("RB", 12, 20, 40))
+    assert "|" in str(widget.render())
+
+
 @pytest.mark.asyncio
 async def test_draft_counts_sums_across_the_whole_league(tmp_path):
     """The DRAFTED panel is a leaguewide sum, not just our own roster --
@@ -895,6 +905,18 @@ async def test_roster_header_colors_by_need_and_target(tmp_path):
         assert app.roster._slot_label("QB", 0, 2, 3) == f"[{ws_console._ramp_style(0/3)}]QB 0/2[/]"
         assert app.roster._slot_label("QB", 2, 2, 3) == f"[{ws_console._ramp_style(2/3)}]QB 2/2[/]"
         assert app.roster._slot_label("QB", 3, 2, 3) == f"[{ws_console._ramp_style(3/3)}]QB 3/2[/]"
+
+
+@pytest.mark.asyncio
+async def test_roster_header_separates_slots_with_a_divider(tmp_path):
+    """T63: same literal "|" divider as DraftCounts, between adjacent slot
+    labels on the roster header's second line."""
+    app, ws, _ = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        app._refresh_panels()
+        await pilot.pause()
+        _, slot_line = str(app.roster.render()).split("\n")
+        assert "|" in slot_line
 
 
 @pytest.mark.asyncio
