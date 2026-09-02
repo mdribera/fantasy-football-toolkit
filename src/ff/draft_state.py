@@ -279,6 +279,22 @@ class DraftState:
             for pos, target in config.ROSTER_TARGETS.items()
         }
 
+    def needs_starter(self, team: str, position: str) -> bool:
+        """Whether `position` still fills an unfilled starting slot --
+        needs() alone, since it skips FLEX entirely, says no as soon as a
+        position's own STARTERS count is met even while the FLEX slot (RB/WR/
+        TE only) sits open."""
+        if self.needs(team).get(position, 0) > 0:
+            return True
+        if position not in config.FLEX_ELIGIBLE:
+            return False
+        counts = self.position_counts(team)
+        flex_filled = sum(
+            max(0, counts.get(pos, 0) - config.STARTERS.get(pos, 0))
+            for pos in config.FLEX_ELIGIBLE
+        )
+        return flex_filled < config.STARTERS["FLEX"]
+
     # --- persistence -----------------------------------------------------
     def record(self, player: str, position: str, price: int, team: str) -> None:
         self.purchases.append(Purchase(player, position, price, normalize_team(team)))

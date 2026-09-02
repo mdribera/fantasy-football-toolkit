@@ -122,6 +122,41 @@ def test_targets_reports_the_full_bench_not_just_starters():
     assert state.targets("ME")["QB"] == 1
 
 
+def test_needs_starter_true_for_an_unfilled_starting_position():
+    state = draft_state.DraftState(my_team="ME")
+    assert state.needs_starter("ME", "QB") is True
+
+
+def test_needs_starter_true_for_flex_eligible_once_starters_are_met():
+    """RB's own STARTERS count (2) is met, but nothing has filled the open
+    FLEX slot yet -- needs() alone would report 0 and miss this."""
+    state = draft_state.DraftState(my_team="ME")
+    state.record("Bijan Robinson", "RB", 54, "ME")
+    state.record("Kenneth Walker III", "RB", 38, "ME")
+    assert state.needs("ME")["RB"] == 0
+    assert state.needs_starter("ME", "RB") is True
+
+
+def test_needs_starter_false_once_another_position_has_filled_flex():
+    """A third WR beyond WR's own starting requirement fills FLEX, so RB no
+    longer needs a starter even though RB itself sits at exactly 2."""
+    state = draft_state.DraftState(my_team="ME")
+    state.record("Bijan Robinson", "RB", 54, "ME")
+    state.record("Kenneth Walker III", "RB", 38, "ME")
+    state.record("Justin Jefferson", "WR", 52, "ME")
+    state.record("Puka Nacua", "WR", 45, "ME")
+    state.record("Amon-Ra St. Brown", "WR", 40, "ME")
+    assert state.needs_starter("ME", "RB") is False
+
+
+def test_needs_starter_false_for_a_covered_non_flex_position():
+    """K and D/ST aren't FLEX-eligible, so meeting their own starting
+    requirement is the whole answer -- no FLEX fallback to check."""
+    state = draft_state.DraftState(my_team="ME")
+    state.record("Some Kicker", "K", 1, "ME")
+    assert state.needs_starter("ME", "K") is False
+
+
 def test_position_counts_with_no_team_sums_across_the_whole_league():
     """T46: the leaguewide DRAFTED panel reuses this per-team helper with no
     team filter, rather than a parallel method -- the per-team call must

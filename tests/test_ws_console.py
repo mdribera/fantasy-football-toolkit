@@ -2490,6 +2490,49 @@ async def test_five_second_cue_is_silent_for_an_unpriced_player(tmp_path):
     assert "five" not in app.sounds.played
 
 
+# --- T59: budget and need conditions on the 5s cue ------------------------
+
+@pytest.mark.asyncio
+async def test_five_second_cue_is_silent_when_we_cannot_afford_to_outbid(tmp_path):
+    """Budget burned down to where our own max bid can't clear the current
+    high -- the cue would be nudging toward a bid we're not allowed to
+    make."""
+    app, ws, state = make_app(tmp_path)
+    app.sounds = FakeSoundPlayer()
+    state.record("Burned Budget", "QB", 185, "ME")   # max_bid("ME") now $1
+    async with app.run_test() as pilot:
+        ws.feed(draft_ws.Clock(state=2, remaining_ms=9500,
+                                high_bid_team=4, player_id=3915514, high_bid_amount=30))
+        await app._poll()
+        await pilot.pause()
+        ws.feed(draft_ws.Clock(state=2, remaining_ms=4800,
+                                high_bid_team=4, player_id=3915514, high_bid_amount=30))
+        await app._poll()
+        await pilot.pause()
+    assert "five" not in app.sounds.played
+
+
+@pytest.mark.asyncio
+async def test_five_second_cue_is_silent_when_the_position_is_not_a_starting_need(tmp_path):
+    """Two quarterbacks already rostered meets QB's starting requirement --
+    QB isn't FLEX-eligible, so there's no fallback check the way RB/WR/TE
+    get -- and a third QB on the clock isn't worth a nudge."""
+    app, ws, state = make_app(tmp_path, rows=QB_FIXTURE_ROWS)
+    app.sounds = FakeSoundPlayer()
+    state.record("Josh Allen", "QB", 60, "ME")
+    state.record("Lamar Jackson", "QB", 50, "ME")
+    async with app.run_test() as pilot:
+        ws.feed(draft_ws.Clock(state=2, remaining_ms=9500,
+                                high_bid_team=4, player_id=4426348, high_bid_amount=20))
+        await app._poll()
+        await pilot.pause()
+        ws.feed(draft_ws.Clock(state=2, remaining_ms=4800,
+                                high_bid_team=4, player_id=4426348, high_bid_amount=20))
+        await app._poll()
+        await pilot.pause()
+    assert "five" not in app.sounds.played
+
+
 @pytest.mark.asyncio
 async def test_my_turn_plays_a_sound_instead_of_the_bell(tmp_path):
     app, ws, _ = make_app(tmp_path)

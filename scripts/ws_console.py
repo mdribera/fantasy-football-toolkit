@@ -645,17 +645,23 @@ class TextualWsApp(App):
 
     def _play_five_second_cue(self, event: draft_ws.Clock) -> None:
         """A last chance to get a bid in before the clock runs out -- fires
-        only when we're not already the high bidder and the price is still
-        under Sheet, not on every one of ~160 nominations a night regardless
-        of whether it's actually worth our attention."""
+        only when we're not already the high bidder, the price is still
+        under Sheet, we can still legally outbid, and the position is a
+        starting need for us, not on every one of ~160 nominations a night
+        regardless of whether it's actually worth our attention."""
         if event.high_bid_team == config.MY_TEAM_ID:
             return
         name, _ = self.resolver.resolve(event.player_id)
         match = self.lookup.get(name.lower())
         if match is None or event.high_bid_amount is None:
             return
-        if match.value > event.high_bid_amount:
-            self.sounds.play("five")
+        if match.value <= event.high_bid_amount:
+            return
+        if self.state.max_bid(self.state.my_team) <= event.high_bid_amount:
+            return
+        if not self.state.needs_starter(self.state.my_team, match.position):
+            return
+        self.sounds.play("five")
 
     def _handle_nomination_error(self, event: draft_ws.Error) -> None:
         """A rejected NOMINATE leaves the turn exactly where a silently
