@@ -496,13 +496,13 @@ class TextualWsApp(App):
         self.nominations = self.query_one("#nominations", NominationTable)
         self.command = self.query_one("#command", Input)
 
-        self.bidlog.border_title = "Bid log (this nomination)"
+        self.bidlog.border_title = "Bid log"
         self.salelog.border_title = "Sale log"
-        self.output.border_title = "Output (:me :teams :market :best :need)"
+        self.output.border_title = "Output"
         self._update_roster_title()
-        self.nominations.border_title = "Board (n nominate, space star, / search)"
+        self.nominations.border_title = "Board"
         self._update_status_title()
-        self.drafted.border_title = "DRAFTED (of starting spots)"
+        self.drafted.border_title = "Drafted"
 
         self._reload_board()
         self._refresh_panels()
@@ -873,7 +873,7 @@ class TextualWsApp(App):
         return match.projected_points if match else float("-inf")
 
     def _update_roster_title(self) -> None:
-        self.roster_box.border_title = f"{self.selected_team} -- tab to focus, up/down to select"
+        self.roster_box.border_title = f"{self.selected_team}"
 
     def _update_status_title(self) -> None:
         # Mute is otherwise invisible -- there's no persistent on-screen
