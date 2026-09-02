@@ -310,8 +310,9 @@ def test_draft_counts_pos_cell_colors_toward_the_roster_target():
 
 def test_draft_counts_render_puts_all_six_positions_on_one_line():
     """T49: six stacked half-rows cost the panel three lines of height for
-    six numbers; one line fits the same information in the ~56 columns
-    #drafted's 2fr width gives it at the standard 120-col test size."""
+    six numbers; one line fits the same information in the ~63 columns
+    #drafted's 2fr width gives it at the standard 120-col test size, once
+    the divider is padded (T63)."""
     widget = ws_console.DraftCounts()
     widget.counts = (
         ("QB", 5, 20, 30), ("RB", 12, 20, 40), ("WR", 14, 20, 50),
@@ -320,14 +321,14 @@ def test_draft_counts_render_puts_all_six_positions_on_one_line():
     lines = str(widget.render()).split("\n")
     assert len(lines) == 1
     assert all(pos in lines[0] for pos in ("QB", "RB", "WR", "TE", "DST", "K"))
-    assert len(lines[0]) <= 56
+    assert len(lines[0]) <= 63
 
 
 def test_draft_counts_separates_positions_with_a_divider():
     """T63: a bare space between two adjacent counts runs together once the
-    color ramp shifts both cells to similar hues -- a literal "|" divider
-    (Mark's own wording), not padded with spaces, to stay inside the
-    56-column budget above."""
+    color ramp shifts both cells to similar hues -- a padded "|" divider
+    (Mark's own wording) reads clearly and still fits the 63-column budget
+    above."""
     widget = ws_console.DraftCounts()
     widget.counts = (("QB", 5, 20, 30), ("RB", 12, 20, 40))
     assert "|" in str(widget.render())
@@ -2170,7 +2171,7 @@ async def test_bid_watchdog_alerts_when_a_sent_bid_never_gets_confirmed(tmp_path
         # A second check with nothing pending must not write another alert.
         app._check_bid_watchdog()
         assert len(app.bidlog.lines) == lines_after_alert
-    assert any("unconfirmed" in str(line) for line in app.bidlog.lines)
+    assert any("was not accepted" in str(line) for line in app.bidlog.lines)
 
 
 @pytest.mark.asyncio
@@ -2200,7 +2201,7 @@ async def test_bid_watchdog_does_not_fire_on_a_bid_that_landed_then_got_outbid(t
         await pilot.pause()
         app._check_bid_watchdog()
         assert not app.banner.display
-    assert not any("unconfirmed" in str(line) for line in app.bidlog.lines)
+    assert not any("was not accepted" in str(line) for line in app.bidlog.lines)
 
 
 @pytest.mark.asyncio
@@ -2260,7 +2261,7 @@ async def test_bid_watchdog_fires_on_total_socket_silence(tmp_path):
         await app._poll()
         await pilot.pause()
         assert app.banner.display
-    assert any("unconfirmed" in str(line) for line in app.bidlog.lines)
+    assert any("was not accepted" in str(line) for line in app.bidlog.lines)
 
 
 @pytest.mark.asyncio

@@ -201,7 +201,7 @@ class DraftCounts(Static):
     def render(self) -> Text:
         if not self.counts:
             return Text.from_markup("[dim]No picks yet.[/dim]")
-        return Text.from_markup("[dim]|[/dim]".join(self._pos_cell(*c) for c in self.counts))
+        return Text.from_markup(" [dim]|[/dim] ".join(self._pos_cell(*c) for c in self.counts))
 
 
 class BidLog(RichLog):
@@ -307,7 +307,7 @@ class RosterPanel(Static):
         lines = [
             f"[bold]Budget: ${self.budget_left}[/bold] / ${config.SALARY_CAP}   "
             f"{self.spots_left} spots   max bid ${self.max_bid_amount}",
-            "[dim]|[/dim]".join(
+            " [dim]|[/dim] ".join(
                 self._slot_label(pos, have, need, target)
                 for pos, have, need, target in self.slots
             ) or "[dim]no starters required[/dim]",
@@ -709,7 +709,7 @@ class TextualWsApp(App):
             elapsed = time.monotonic() - sent_at
             message = (f"Bid ${amount} was not accepted ({elapsed:.0f}s ago).")
             self.banner.show(message, alert=True)
-            self._flash(f"[red]{message} (unconfirmed)[/red]")
+            self._flash(f"[red]{message}[/red]")
             self._rejected_bid = (player_id, amount, message)
             self._pending_bid = None                     # alert once, don't spam every poll
 
