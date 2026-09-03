@@ -63,6 +63,11 @@ class FakeClient:
             raise self.fail_with
         self.sent.append(("NOMINATE", player_id, opening_bid))
 
+    def send_chat(self, text: str) -> None:
+        if self.fail_with:
+            raise self.fail_with
+        self.sent.append(("CHAT", text))
+
     def stop(self) -> None:
         pass
 
@@ -227,6 +232,7 @@ async def test_app_mounts_every_panel(tmp_path):
         assert app.query_one("#bidlog", ws_console.BidLog)
         assert app.query_one("#salelog", ws_console.SaleLog)
         assert app.query_one("#output", ws_console.OutputLog)
+        assert app.query_one("#chat", ws_console.ChatPanel)
         assert app.query_one("#team-list", ws_console.TeamList)
         assert app.query_one("#roster-header", ws_console.RosterPanel)
         assert app.query_one("#roster-table", ws_console.RosterTable)
@@ -274,6 +280,83 @@ async def test_bid_updates_the_status_panel_and_log(tmp_path):
         assert "Bijan Robinson" in app.status.nominee
         assert app.status.high_bid == 54
         assert app.status.high_bidder == "CCT"
+
+
+@pytest.mark.asyncio
+async def test_chat_event_renders_team_and_text(tmp_path):
+    app, ws, _ = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        ws.feed(draft_ws.Chat(4, "{REDACTED-SWID}", 1788393988361, "$100 for Allen"))
+        await app._poll()
+        await pilot.pause()
+        text = "\n".join(str(line) for line in app.chat.lines)
+        assert "CCT" in text
+        assert "$100 for Allen" in text
+
+
+@pytest.mark.asyncio
+async def test_chat_event_does_not_disturb_the_bid_log_or_clear_on_nominee_change(tmp_path):
+    app, ws, _ = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        ws.feed(draft_ws.Bid(4, 3915511, 40, 25000, 12731))
+        await app._poll()
+        await pilot.pause()
+
+        ws.feed(draft_ws.Chat(4, "{REDACTED-SWID}", 1788393988361, "nice bid"))
+        # A different nominee -- BidLog clears on this, ChatPanel must not.
+        ws.feed(draft_ws.Bid(11, 3915512, 10, 25000, 12731))
+        await app._poll()
+        await pilot.pause()
+
+        assert len(app.chat.lines) == 1
+        bidlog_text = "".join(line.text for line in app.bidlog.lines)
+        assert "CCT" not in bidlog_text  # the first nominee's bidder is gone
+        assert "SLAY" in bidlog_text  # the new nominee's bid is what's left
+
+
+@pytest.mark.asyncio
+async def test_chat_command_sends_and_does_not_write_the_panel_directly(tmp_path):
+    """The server echoes a sent chat back to us (confirmed against a real
+    capture, see docs/notes/ws-protocol.md) -- the console must render only
+    on that echo, or Mark's own messages would appear twice."""
+    app, ws, _ = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        app._run_command("chat $100 for Allen")
+        await pilot.pause()
+        assert ws.client.sent == [("CHAT", "$100 for Allen")]
+        assert len(app.chat.lines) == 0
+
+
+@pytest.mark.asyncio
+async def test_chat_command_with_no_text_shows_usage(tmp_path):
+    app, ws, _ = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        app._run_command("chat")
+        await pilot.pause()
+        assert ws.client.sent == []
+        assert any("Usage" in str(line) for line in app.output.lines)
+
+
+@pytest.mark.asyncio
+async def test_chat_command_reports_a_send_failure(tmp_path):
+    app, ws, _ = make_app(tmp_path)
+    ws.client.fail_with = RuntimeError("not connected to the draft room")
+    async with app.run_test() as pilot:
+        app._run_command("chat hello")
+        await pilot.pause()
+        output_text = "".join(line.text for line in app.output.lines)
+        assert "not sent" in output_text.lower()
+
+
+@pytest.mark.asyncio
+async def test_c_opens_the_command_line_prefilled_with_chat(tmp_path):
+    app, ws, _ = make_app(tmp_path)
+    async with app.run_test() as pilot:
+        await pilot.press("c")
+        await pilot.pause()
+        assert app.command.display is True
+        assert app.command.value == "chat "
+    assert ws.client.sent == []
 
 
 def test_status_panel_breaks_after_the_name_and_reverses_high_and_clock():
@@ -498,9 +581,14 @@ async def test_sale_log_stays_pinned_to_the_bottom_on_a_non_sale_refresh(tmp_pat
     """T45: DataTable.clear() resets scroll to the top on every rebuild, and
     _refresh_panels runs on every _drain() -- not just the ones that add a
     sale. A live Clock frame arriving between sales must not snap the log
-    back to row 0."""
+    back to row 0.
+
+    Explicit size, same reason as the roster geometry tests below: at the
+    default 80x24 the wide #chat column leaves #bidlog/#salelog 0 width,
+    which is a real widget collapse this test isn't about -- it needs
+    SaleLog to actually have rows to scroll through."""
     app, ws, state = make_app(tmp_path)
-    async with app.run_test() as pilot:
+    async with app.run_test(size=(120, 40)) as pilot:
         for i in range(20):
             state.record_pick(f"Mystery Player {i}", "K", 1, "HH", espn_pick_id=i)
         app._refresh_panels()

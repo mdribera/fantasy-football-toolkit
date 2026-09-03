@@ -77,6 +77,9 @@ class ReplayClient:
     def send_nomination(self, player_id: int, opening_bid: int) -> None:
         self.sent.append(("NOMINATE", player_id, opening_bid))
 
+    def send_chat(self, text: str) -> None:
+        self.sent.append(("CHAT", text))
+
     def drain(self) -> list[draft_ws.Event]:
         with self._queue_lock:
             events, self._queue = self._queue, []

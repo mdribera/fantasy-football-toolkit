@@ -238,6 +238,16 @@ class OutputLog(RichLog):
     can_focus = False
 
 
+class ChatPanel(RichLog):
+    """The room's chat, one line per message, oldest first. Never cleared on
+    a nominee change (unlike BidLog) -- it's a standing conversation, not
+    per-player state. can_focus = False for the same reason as every other
+    log/table here: NominationTable and TeamList are the only two widgets tab
+    cycles between, and a third focusable widget would silently break that."""
+
+    can_focus = False
+
+
 class SaleLog(DataTable):
     """Every completed sale, oldest first -- a standing ledger next to the
     fast-moving BidLog, which only ever shows the current nomination. Rebuilt
@@ -426,6 +436,7 @@ class TextualWsApp(App):
         Binding("space", "star", "star"),
         Binding("slash", "search", "search"),
         Binding("colon", "command", "command"),
+        Binding("c", "chat", "chat"),
         Binding("s", "toggle_sound", "sound"),
         Binding("escape", "dismiss_banner", "dismiss"),
         Binding("q", "shutdown", "quit"),
@@ -467,22 +478,25 @@ class TextualWsApp(App):
 
     def compose(self) -> ComposeResult:
         yield Banner(id="banner")
-        with Horizontal(id="now-row"):
-            yield StatusPanel(id="status")
-            yield DraftCounts(id="drafted")
-        with Horizontal(id="middle"):
-            yield BidLog(id="bidlog", markup=True, min_width=30, wrap=True)
-            yield SaleLog(id="salelog")
-            with Horizontal(id="roster"):
-                yield TeamList(id="team-list")
-                with Vertical(id="roster-pane"):
-                    yield RosterPanel(id="roster-header")
-                    yield RosterTable(id="roster-table")
-        with Horizontal(id="bottom"):
-            yield NominationTable(id="nominations")
-            yield OutputLog(id="output", markup=True, min_width=30, wrap=True)
+        with Horizontal(id="body"):
+            with Vertical(id="main"):
+                with Horizontal(id="now-row"):
+                    yield StatusPanel(id="status")
+                    yield DraftCounts(id="drafted")
+                with Horizontal(id="middle"):
+                    yield BidLog(id="bidlog", markup=True, min_width=30, wrap=True)
+                    yield SaleLog(id="salelog")
+                    with Horizontal(id="roster"):
+                        yield TeamList(id="team-list")
+                        with Vertical(id="roster-pane"):
+                            yield RosterPanel(id="roster-header")
+                            yield RosterTable(id="roster-table")
+                with Horizontal(id="bottom"):
+                    yield NominationTable(id="nominations")
+                    yield OutputLog(id="output", markup=True, min_width=30, wrap=True)
+            yield ChatPanel(id="chat", markup=True, min_width=30, wrap=True)
         yield Input(id="command", placeholder="/name | pos QB | sort rec | star | "
-                    "b 45 | team 4 | market | teams | best RB | need | me | quit")
+                    "b 45 | team 4 | market | teams | best RB | need | me | chat hi | quit")
         yield Footer()
 
     async def on_mount(self) -> None:
@@ -492,6 +506,7 @@ class TextualWsApp(App):
         self.bidlog = self.query_one("#bidlog", BidLog)
         self.salelog = self.query_one("#salelog", SaleLog)
         self.output = self.query_one("#output", OutputLog)
+        self.chat = self.query_one("#chat", ChatPanel)
         self.team_list = self.query_one("#team-list", TeamList)
         self.roster_box = self.query_one("#roster", Horizontal)
         self.roster = self.query_one("#roster-header", RosterPanel)
@@ -502,6 +517,7 @@ class TextualWsApp(App):
         self.bidlog.border_title = "Bid log"
         self.salelog.border_title = "Sale log"
         self.output.border_title = "Output"
+        self.chat.border_title = "Chat"
         self._update_roster_title()
         self.nominations.border_title = "Board"
         self._update_status_title()
@@ -654,6 +670,10 @@ class TextualWsApp(App):
                     self._clear_turn_alert()
             elif isinstance(event, draft_ws.Error):
                 self._handle_nomination_error(event)
+            elif isinstance(event, draft_ws.Chat):
+                who = config.TEAMS.get(event.team_id, f"TEAM{event.team_id}")
+                when = time.strftime("%H:%M", time.localtime(event.sent_ms / 1000))
+                self.chat.write(f"[dim]{when}[/dim] [bold]{who}[/bold] {event.text}")
             elif isinstance(event, draft_ws.WsError):
                 self._flash(f"[yellow]unparsed frame:[/yellow] {event.raw!r} "
                             f"({event.reason})")
@@ -1255,6 +1275,12 @@ class TextualWsApp(App):
         self.command.cursor_position = len(self.command.value)
         self.command.focus()
 
+    def action_chat(self) -> None:
+        self.command.display = True
+        self.command.value = "chat "
+        self.command.cursor_position = len(self.command.value)
+        self.command.focus()
+
     def action_toggle_sound(self) -> None:
         self.sounds.enabled = not self.sounds.enabled
         self._update_status_title()
@@ -1415,9 +1441,18 @@ class TextualWsApp(App):
             pos = cmd[1] if len(cmd) > 1 and not cmd[1].isdigit() else None
             limit = next((int(c) for c in cmd[1:] if c.isdigit()), 15)
             self._output(auction.best_table(self.state, self.vals, pos, limit))
+        elif head == "chat":
+            text = line.split(None, 1)[1].strip() if len(cmd) > 1 else ""
+            if not text:
+                self._output("[yellow]Usage: chat <message>[/yellow]", clear=False)
+            else:
+                try:
+                    self.ws.client.send_chat(text)
+                except RuntimeError as exc:
+                    self._output(f"[red]Chat not sent: {exc}[/red]", clear=False)
         else:
             self._output("[yellow]Unrecognized.[/yellow] Use: /name, pos, sort, star, "
-                        "sold, clear, team, b/market/teams/best/need/me/quit", clear=False)
+                        "sold, clear, team, b/market/teams/best/need/me/chat/quit", clear=False)
 
 
 def run_ws_console(ws, state: draft_state.DraftState,

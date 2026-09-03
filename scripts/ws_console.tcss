@@ -36,6 +36,19 @@ Screen.over-max {
     background: $error;
 }
 
+#body {
+    height: 1fr;
+}
+
+#main {
+    width: 1fr;
+}
+
+#chat {
+    width: 70;
+    border: round $primary;
+}
+
 #now-row {
     height: 10;
 }
@@ -80,7 +93,12 @@ Screen.over-max {
 }
 
 #roster-pane {
+    /* Floor against #chat's fixed width competing with #middle's fr split --
+       without it the roster table (fixed-width team-list already at its
+       side) is what gets squeezed to nothing, not BidLog/SaleLog, which
+       wrap text and tolerate narrow width far better. */
     width: 1fr;
+    min-width: 20;
     padding: 0 1;
 }
 

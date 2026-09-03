@@ -184,6 +184,22 @@ class Error:
     message: str
 
 
+@dataclass(frozen=True)
+class Chat:
+    """A room-wide chat message, including the echo of our own sends (ESPN
+    reflects a sent CHAT back to its own connection rather than confirming it
+    any other way -- confirmed 2026-09-02, see docs/notes/ws-protocol.md).
+    `text` arrives percent-and-plus encoded, the same family as `Error`.
+    `swid` is per-account identity and gets redacted to the literal string
+    "{REDACTED-SWID}" in any on-disk capture (see redact_token below), so it
+    must not be relied on for identity -- use team_id instead."""
+
+    team_id: int
+    swid: str
+    sent_ms: int
+    text: str
+
+
 # --- client-to-server frames -------------------------------------------
 # Confirmed from a DevTools HAR export of a real practice draft (2026-08-26,
 # see docs/notes/ws-protocol.md) -- captured from ESPN's own client, never
@@ -237,8 +253,8 @@ class WsError:
 
 Event = (
     Autodraft | Init | Token | Joined | Left | Pong | BidAck | DraftList | State | Clock
-    | AutoSuggest | Passed | Bid | Sold | Nomination | Error | Ping | BidCommand | Nominate
-    | Prenominate | AutoNomination | WsError
+    | AutoSuggest | Passed | Bid | Sold | Nomination | Error | Chat | Ping | BidCommand
+    | Nominate | Prenominate | AutoNomination | WsError
 )
 
 
@@ -314,6 +330,10 @@ def parse_frame(raw: str) -> Event:
         if kind == "ERROR":
             code, *rest = fields
             return Error(int(code), urllib.parse.unquote_plus(" ".join(rest)))
+        if kind == "CHAT":
+            team_id, swid, sent_ms, *rest = fields
+            return Chat(int(team_id), swid, int(sent_ms),
+                        urllib.parse.unquote_plus(" ".join(rest)))
         if kind == "PING":
             (payload,) = fields
             return Ping(payload)
@@ -503,6 +523,15 @@ class DraftRoomClient:
 
     def send_nomination(self, player_id: int, opening_bid: int) -> None:
         self._send(f"NOMINATE {player_id} {opening_bid}\n")
+
+    def send_chat(self, text: str) -> None:
+        # %20-for-space, not the +-for-space Chat.text decodes on receive --
+        # confirmed asymmetric against a real DevTools capture, see
+        # docs/notes/ws-protocol.md. safe='' (rather than quote's default
+        # safe='/') so every character including '/' is escaped, which also
+        # means a newline or space in typed text can never inject a second
+        # frame or extra fields onto the wire.
+        self._send(f"CHAT {urllib.parse.quote(text, safe='')}\n")
 
     def _send(self, frame: str) -> None:
         if self._ws is None or not self.connected:

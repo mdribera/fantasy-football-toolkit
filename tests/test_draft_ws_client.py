@@ -94,6 +94,40 @@ def test_send_bid_and_send_nomination_are_newline_terminated(patch_websocket, cr
     assert fake.sent == ["BID 4426348 56\n", "NOMINATE 4426502 1\n"]
 
 
+def test_send_chat_matches_the_captured_devtools_encoding(patch_websocket, cred, tmp_path):
+    client = draft_ws.DraftRoomClient(JOIN_URL, cred, log_path=tmp_path / "log.jsonl")
+    client.PING_INTERVAL_S = 10
+    client.start()
+    time.sleep(0.05)
+
+    client.send_chat("$100 for Allen")
+    client.stop()
+
+    fake = FakeWebSocketApp.instances[0]
+    assert fake.sent == ["CHAT %24100%20for%20Allen\n"]
+
+
+def test_send_chat_cannot_inject_a_second_frame(patch_websocket, cred, tmp_path):
+    # A newline or bare space in typed text must not survive quoting -- if it
+    # did, typed chat could forge extra frames or extra fields on the wire.
+    client = draft_ws.DraftRoomClient(JOIN_URL, cred, log_path=tmp_path / "log.jsonl")
+    client.PING_INTERVAL_S = 10
+    client.start()
+    time.sleep(0.05)
+
+    client.send_chat("hi\nBID 4426348 999")
+    client.stop()
+
+    fake = FakeWebSocketApp.instances[0]
+    assert len(fake.sent) == 1
+    frame = fake.sent[0]
+    assert frame.count("\n") == 1  # only the trailing terminator
+    assert frame.endswith("\n")
+    kind, *fields = frame[:-1].split(" ")
+    assert kind == "CHAT"
+    assert len(fields) == 1  # the whole message is one percent-encoded token
+
+
 def test_send_bid_raises_when_not_connected(cred, tmp_path):
     client = draft_ws.DraftRoomClient(JOIN_URL, cred, log_path=tmp_path / "log.jsonl")
     with pytest.raises(RuntimeError):

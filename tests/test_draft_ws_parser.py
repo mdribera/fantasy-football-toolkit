@@ -93,6 +93,30 @@ def test_error_frames_in_the_rejected_nomination_capture_all_parse():
     assert all("player ID 3042519" in e.message for e in errors)
 
 
+def test_chat_frame():
+    event = draft_ws.parse_frame("CHAT 6 {REDACTED-SWID} 1788393988361 %24100+for+Allen\n")
+    assert event == draft_ws.Chat(6, "{REDACTED-SWID}", 1788393988361, "$100 for Allen")
+
+
+def test_chat_frames_in_the_real_chat_capture_all_parse():
+    # ws-log-1788394279.jsonl is the one capture with real CHAT frames: a
+    # $100-for-Allen offer, an acceptance, and a typo correction, all from a
+    # live room. See docs/notes/ws-protocol.md.
+    path = DATA / "ws-log-1788394279.jsonl"
+    chats = [draft_ws.parse_frame(msg) for msg in draft_ws.iter_frames(path)
+             if msg.startswith("CHAT")]
+    assert len(chats) == 3
+    assert all(isinstance(c, draft_ws.Chat) for c in chats)
+    # SWID is redacted on disk (see redact_token) -- the parser must accept
+    # that in place of a real GUID rather than raise.
+    assert all(c.swid == "{REDACTED-SWID}" for c in chats)
+    assert [c.text for c in chats] == [
+        "$100 for Allen",
+        "That's a deal",
+        "Sorry, I meant $10... typo!",
+    ]
+
+
 def test_passed_frame():
     event = draft_ws.parse_frame("PASSED 6 3915511 false\n")
     assert event == draft_ws.Passed(6, 3915511, False)
