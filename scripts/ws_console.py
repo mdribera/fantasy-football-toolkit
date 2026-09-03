@@ -301,11 +301,14 @@ class RosterPanel(Static):
     though the plain reactives around it don't trigger that on their own.
 
     The third line is T67's budget-allocation read: dollars still available in
-    each position's plan share (`values.budget_plan`), lined up under that
-    position's slot count rather than repeating its label. It intentionally
-    doesn't reconcile with the `Budget: $X / $200` total on line one -- the
-    plan only allocates about $187 of the $200 cap, leaving room for the
-    bidding wars `docs/auction-strategy.md` expects."""
+    each position's plan share (`values.realistic_budget_plan`), lined up
+    under that position's slot count rather than repeating its label. It
+    intentionally doesn't reconcile with the `Budget: $X / $200` total on
+    line one -- the plan only allocates about $187 of the $200 cap, leaving
+    room for the bidding wars `docs/auction-strategy.md` expects. K and D/ST
+    are priced at $1 each rather than the model's raw market rate, per that
+    doc's "always $1, always last" guidance; the freed-up dollars are folded
+    back into QB, WR and RB in equal shares."""
 
     budget_left = reactive(config.SALARY_CAP)
     spots_left = reactive(config.ROSTER_SIZE)
@@ -440,7 +443,7 @@ class TextualWsApp(App):
         self.starred: set[str] = set(nomination_list)
         self.nomination_list_path = nomination_list_path
         self.lookup = {v.name.lower(): v for v in vals}
-        self.plan = values.budget_plan(vals)
+        self.plan = values.realistic_budget_plan(vals)
         self.sounds = sounds.SoundPlayer()
         self._log_player_id: int | None = None
         self._last_bid_team = ""

@@ -239,3 +239,23 @@ def budget_plan(valuations: list[Valuation]) -> dict:
     plan["_total"] = total
     plan["_cap"] = config.SALARY_CAP
     return plan
+
+
+def realistic_budget_plan(valuations: list[Valuation]) -> dict:
+    """budget_plan(), repriced for how the draft is actually run: K and D/ST
+    go for $1 each, not the model's market rate (see "Failure modes to watch
+    for" in docs/auction-strategy.md). The dollars that frees up go back into
+    QB, WR and RB in equal shares, since those are the positions where
+    bidding wars actually happen.
+    """
+    plan = budget_plan(valuations)
+    freed = 0
+    for pos in ("K", "D/ST"):
+        realistic = config.ROSTER_TARGETS[pos] * config.MIN_BID
+        freed += plan[pos]["subtotal"] - realistic
+        plan[pos]["subtotal"] = realistic
+    share, remainder = divmod(freed, 3)
+    for i, pos in enumerate(("QB", "WR", "RB")):
+        plan[pos]["subtotal"] += share + (1 if i < remainder else 0)
+    plan["_total"] = sum(plan[pos]["subtotal"] for pos in config.ROSTER_TARGETS)
+    return plan
