@@ -29,10 +29,9 @@ FORWARD_RATE_MAX = 3.0
 # forward_inflation_by_position.
 TILT_EVIDENCE_DOLLARS = 25
 
-# In --ws mode, the background printer thread records sales (record_pick ->
-# save()) alongside the main thread's own record()/undo() calls. Without this,
-# two threads writing the same fixed tmp path can interleave, corrupting the
-# write or making one thread's os.replace lose a FileNotFoundError race.
+# save() writes to a fixed tmp path; without this lock, two threads racing
+# to save at once can interleave their writes, corrupting the file or making
+# one thread's os.replace lose a FileNotFoundError race.
 _save_lock = threading.Lock()
 
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Textual live auction console, the presentation layer for `auction.py --ws`.
+"""Textual live auction console, the presentation layer for `auction.py`.
 
 Textual owns the whole screen and redraws widgets in place, which is what
 makes the persistent status/roster/analysis view possible and what fixes the
@@ -1356,11 +1356,10 @@ class TextualWsApp(App):
             self._run_command(line)
 
     def _run_command(self, line: str) -> None:
-        """The same verbs the REPL dispatches, for everything not worth a
-        hotkey, plus the board's own search/filter/sort verbs. Tables come
-        from auction.py's builders so both consoles show exactly the same
-        numbers. Anything typed here replies into OutputLog; only what the
-        auction itself does (a sent bid, a live sale) goes to the bid log."""
+        """Everything not worth a hotkey, plus the board's own
+        search/filter/sort verbs. Tables come from auction.py's builders.
+        Anything typed here replies into OutputLog; only what the auction
+        itself does (a sent bid, a live sale) goes to the bid log."""
         if line.startswith("/"):
             self._board_query = line[1:].strip() or None
             self._reload_board()

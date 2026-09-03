@@ -453,11 +453,10 @@ DISCONNECT_ALERT_PREFIX = "disconnected from the draft room"
 
 
 class DraftRoomClient:
-    """Background-threaded websocket connection to the live draft room, in
-    the same shape as scripts/auction.py's SyncController: a thread that
-    only ever reads (plus the automated PING keepalive) and pushes parsed
-    events onto a queue, with the main loop the sole consumer -- so there's
-    no race with the console's own reads.
+    """Background-threaded websocket connection to the live draft room: a
+    thread that only ever reads (plus the automated PING keepalive) and
+    pushes parsed events onto a queue, with the main loop the sole consumer
+    -- so there's no race with the console's own reads.
 
     Reconnects on its own, with the same token, if frames stop arriving
     (the watchdog) rather than trusting websocket-client to notice an

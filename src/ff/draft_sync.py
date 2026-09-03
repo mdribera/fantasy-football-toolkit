@@ -1,4 +1,4 @@
-"""Live draft feed: poll ESPN's own draft-detail API instead of the browser.
+"""Poll ESPN's own draft-detail API, and resolve player ids against the board.
 
 `view=mDraftDetail` returns the full auction skeleton -- one row per roster
 slot across all ten teams, whether filled or not -- as plain JSON. A slot with
@@ -10,8 +10,13 @@ price paid and buying team already attached:
 
 This does not go through espn_api's `League.draft` / `_fetch_draft()`: that
 method returns early unless `draftDetail.drafted` is true, which won't be the
-case until the auction is over. We want it live, so this module talks to the
-endpoint directly.
+case until the auction is over, so this module talks to the endpoint
+directly. It does not update during a live auction, though (see draft_ws.py's
+module docstring) -- `DraftFeed`/`fetch_picks` serve `scripts/draft_sync.py`'s
+reachability check and post-draft reconciliation, not the live console.
+`PlayerResolver` is the piece the console actually depends on: it resolves a
+player id against `data/values.json`, falling back to a live ESPN lookup on
+a cache miss.
 """
 
 from __future__ import annotations
@@ -34,9 +39,8 @@ DRAFT_DETAIL_URL = (
 class DraftFeedError(RuntimeError):
     """The feed could not be reached or ESPN returned something unusable.
 
-    Callers should treat this as "sync is degraded," not "the program crashed"
-    -- the console's job during a live auction is to keep working with manual
-    entry, not to raise.
+    Callers should treat this as "sync is degraded," not "the program
+    crashed" -- the caller's job is to report and continue, not to raise.
     """
 
 

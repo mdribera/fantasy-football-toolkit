@@ -1,12 +1,12 @@
-"""Replay a raw ws-log-*.jsonl capture through the live --ws console.
+"""Replay a raw ws-log-*.jsonl capture through the live auction console.
 
 `scripts/draft_ws.py --replay` already reads this exact capture format
 (`ff.draft_ws.iter_frames` + `parse_frame`), but it only ever folds `Sold`
 events into a scratch `DraftState` and ignores everything else -- nothing
 drives the full Textual console (`ws_console.TextualWsApp`) from a capture,
-which is the gap `auction.py --ws --ws-replay PATH` closes. Useful on its
-own, and it's how the T25 `ERROR`-frame fix got exercised end to end against
-a real rejection (`data/ws-log-1787942937.jsonl`) instead of only synthetic
+which is the gap `auction.py --ws-replay PATH` closes. Useful on its own,
+and it's how the T25 `ERROR`-frame fix got exercised end to end against a
+real rejection (`data/ws-log-1787942937.jsonl`) instead of only synthetic
 test events.
 
 `ReplayController` mirrors `auction.WsController` exactly: it wraps

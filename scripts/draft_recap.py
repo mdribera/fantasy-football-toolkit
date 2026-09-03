@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Post-draft recap: grades and highlights from a captured live auction.
 
-Rebuilds the complete pick record from one or more `--ws` captures (see
+Rebuilds the complete pick record from one or more console captures (see
 draft_ws.py) and grades every team on four independent axes -- Sheet
 surplus, market surplus against ESPN's own auction averages, projected
 starting-lineup points, and roster construction risk -- rather than a single

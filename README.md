@@ -38,10 +38,11 @@ and prices every player: projected points minus a positional replacement
 baseline, with the $1,840 biddable surplus distributed in proportion. Writes
 `data/values.json` and a tiered board.
 
-**`scripts/auction.py`** is the live draft console. Record every purchase in
-the room and it tracks budgets, computes your max bid, flags unfilled starting
-slots, and reports **per-position market inflation** -- which position the room
-is overpaying for, and therefore which one is going cheap.
+**`scripts/auction.py`** is the live draft console, a full-screen view that
+reads the draft room's own websocket directly. It tracks budgets, computes
+your max bid, flags unfilled starting slots, and reports **per-position
+market inflation** -- which position the room is overpaying for, and
+therefore which one is going cheap.
 
 ## What the model currently says
 

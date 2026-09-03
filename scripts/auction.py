@@ -1,36 +1,25 @@
 #!/usr/bin/env python3
 """Live auction console. Run this in a terminal beside the ESPN draft room.
 
-Commands (type at the > prompt):
-  <player> <price> <team>   record a purchase        e.g. "Josh Allen 62 ME"
-  me                        my roster, budget, max bid, unfilled slots
-  best [POS] [n]            best remaining by value
-  need                      best remaining at positions I still must fill
-  teams                     every team's budget and roster count
-  market                    inflation: is the room paying over or under sheet
-  sync                      force an immediate pull from the ESPN draft feed
-  undo                      remove the last recorded purchase
-  quit
+A full-screen Textual view (see ws_console.py) that reads the draft room's
+own websocket directly: `b` bids current-high + 1, `n` nominates the
+board's selected row, `space` stars a row onto the prepared queue, `/`
+searches, `c` opens the command line pre-filled to send chat, `tab` moves
+focus between the board and the team list. `:` opens a command line for
+everything else -- `me`, `best`, `need`, `teams`, `market`, `pos`, `sort`,
+`star`, `sold`, `clear`, `team`, `chat`, `quit`.
 
-By default this polls ESPN's own draft-detail feed in the background and
-auto-records completed picks as they close -- see 'sync' to force a pull, and
---no-sync to disable it and enter everything by hand. If the feed goes quiet,
-a banner says so; manual entry keeps working regardless.
-
-Use --ws for the live websocket console, a full-screen Textual view with
-hotkeys for bidding and nominating. --mirror is the fallback if the socket is
-unavailable.
+The join URL comes from `data/join-url.txt` (see --join-url-file): open the
+draft room, DevTools -> Network tab -> WS filter -> copy the JOIN request's
+full URL. --ws-replay drives the console from a recorded ws-log-*.jsonl
+capture instead of a live socket, for rehearsal.
 
 State persists to data/draft-state.json, so a crashed terminal loses nothing.
 """
 
 import argparse
-import http.server
 import json
-import queue
 import sys
-import threading
-import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -43,80 +32,6 @@ from ff import config, draft_state, draft_sync, draft_ws, values
 
 console = Console()
 VALUES_PATH = Path(__file__).resolve().parents[1] / "data" / "values.json"
-FEED_DOWN_THRESHOLD = 3  # consecutive failed polls before we warn out loud
-
-
-class _ReplayDone(Exception):
-    """Internal: the replay fixture has no more snapshots."""
-
-
-def _replay_source(path: Path):
-    """A PickSource that steps through a recorded fixture instead of ESPN.
-
-    Lets --replay drive the exact same background-poller code path as a live
-    draft, which is the point: this is what a rehearsal actually rehearses.
-    """
-    snapshots = iter(list(draft_sync.replay_snapshots(path)))
-
-    def _next() -> dict:
-        try:
-            return next(snapshots)
-        except StopIteration:
-            raise _ReplayDone() from None
-
-    return _next
-
-
-class SyncController:
-    """Background poller feeding completed picks to the main REPL loop.
-
-    The thread only ever reads from ESPN and pushes onto a queue -- it never
-    touches DraftState. The main loop is the sole writer, so there's no race
-    with manual entry or 'undo'.
-    """
-
-    def __init__(self, source, resolver: draft_sync.PlayerResolver, interval: int):
-        self.feed = draft_sync.DraftFeed(source, resolver)
-        self.interval = interval
-        self.consecutive_failures = 0
-        self.last_error: str | None = None
-        self._queue: list = []
-        self._lock = threading.Lock()
-        self._stop = threading.Event()
-        self._wake = threading.Event()
-        self._thread = threading.Thread(target=self._run, daemon=True)
-
-    def start(self) -> None:
-        self._thread.start()
-
-    def wake(self) -> None:
-        """Ask the poller to run now instead of waiting out the interval."""
-        self._wake.set()
-
-    def _run(self) -> None:
-        while not self._stop.is_set():
-            try:
-                picks = self.feed.poll()
-                self.consecutive_failures = 0
-                self.last_error = None
-                if picks:
-                    with self._lock:
-                        self._queue.extend(picks)
-            except _ReplayDone:
-                return
-            except draft_sync.DraftFeedError as exc:
-                self.consecutive_failures += 1
-                self.last_error = str(exc)
-            self._wake.wait(self.interval)
-            self._wake.clear()
-
-    def drain(self) -> list:
-        with self._lock:
-            picks, self._queue = self._queue, []
-        return picks
-
-    def is_down(self) -> bool:
-        return self.consecutive_failures >= FEED_DOWN_THRESHOLD
 
 
 # --- live websocket auction logic (pure, no I/O) --------------------------
@@ -388,9 +303,11 @@ def load_join_url(path: Path) -> str:
 
 
 class WsController:
-    """Wraps DraftRoomClient with the same drain-before-prompt shape
-    SyncController gives the REST path, plus the live auction pointer
-    ('b'/'n' need to know what nomination is active and at what price)."""
+    """Wraps DraftRoomClient with a drain-before-prompt shape -- events pile
+    up on a queue in a background thread and the main loop drains them all
+    before every prompt, so there's no race with a typed command -- plus the
+    live auction pointer ('b'/'n' need to know what nomination is active and
+    at what price)."""
 
     def __init__(self, join_url: str, cred: config.EspnCredentials):
         self.client = draft_ws.DraftRoomClient(join_url, cred)
@@ -418,54 +335,6 @@ class WsController:
 
     def milestone(self, event: draft_ws.Clock) -> int | None:
         return clock_milestone(event.remaining_ms, self._announced)
-
-
-class _MirrorRequestHandler(http.server.BaseHTTPRequestHandler):
-    def do_POST(self) -> None:
-        length = int(self.headers.get("Content-Length", 0))
-        body = self.rfile.read(length)
-        try:
-            payload = json.loads(body)
-        except ValueError:
-            self.send_response(400)
-            self.end_headers()
-            return
-        self.server.mirror_queue.put(payload)  # type: ignore[attr-defined]
-        self.send_response(204)
-        self.end_headers()
-
-    def log_message(self, format: str, *args) -> None:
-        pass  # quiet -- the console already prints what matters
-
-
-class MirrorController:
-    """Listens for POSTs from the browser-side mirror snippet (Workstream 4
-    fallback) and hands raw {raw, price} payloads to the main loop, the
-    same drain-before-prompt shape as SyncController and WsController.
-    Deliberately does not try to parse a player/team out of the raw DOM
-    text -- ESPN's on-screen labels won't reliably match config.TEAMS, so
-    this is a nudge for manual entry, not an auto-importer."""
-
-    def __init__(self, port: int = 8765):
-        self.queue: "queue.Queue[dict]" = queue.Queue()
-        self._server = http.server.HTTPServer(("127.0.0.1", port), _MirrorRequestHandler)
-        self._server.mirror_queue = self.queue  # type: ignore[attr-defined]
-        self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
-
-    def start(self) -> None:
-        self._thread.start()
-
-    def drain(self) -> list[dict]:
-        picks = []
-        while True:
-            try:
-                picks.append(self.queue.get_nowait())
-            except queue.Empty:
-                break
-        return picks
-
-    def stop(self) -> None:
-        self._server.shutdown()
 
 
 NOMINATION_LIST_PATH = Path(__file__).resolve().parents[1] / "data" / "nomination-list.txt"
@@ -659,12 +528,6 @@ def me_table(state: draft_state.DraftState,
     return table, footer
 
 
-def show_me(state: draft_state.DraftState, vals: list[values.Valuation]) -> None:
-    table, footer = me_table(state, vals)
-    console.print(table)
-    console.print(footer)
-
-
 def best_table(state: draft_state.DraftState, vals: list[values.Valuation],
                position=None, limit=15) -> Table:
     taken = state.taken()
@@ -694,10 +557,6 @@ def best_table(state: draft_state.DraftState, vals: list[values.Valuation],
     return table
 
 
-def show_best(state, vals, position=None, limit=15) -> None:
-    console.print(best_table(state, vals, position, limit))
-
-
 def teams_table(state: draft_state.DraftState) -> Table:
     table = Table(title="League budgets")
     table.add_column("Team")
@@ -711,10 +570,6 @@ def teams_table(state: draft_state.DraftState) -> Table:
                       f"${state.spent_by(team)}", f"${state.budget_left(team)}",
                       str(state.spots_left(team)), f"${state.max_bid(team)}")
     return table
-
-
-def show_teams(state: draft_state.DraftState) -> None:
-    console.print(teams_table(state))
 
 
 def market_table(state: draft_state.DraftState,
@@ -744,60 +599,19 @@ def market_table(state: draft_state.DraftState,
     return table
 
 
-def _drain_sync(sync: SyncController, state: draft_state.DraftState,
-                 vals: list[values.Valuation]) -> None:
-    """Pull whatever the poller has queued and record it, before every prompt.
-
-    A pick already present under the same player name -- typed in by hand
-    before the feed caught up -- is skipped rather than recorded twice.
-    """
-    picks = sync.drain()
-    if not picks:
-        if sync.is_down():
-            console.print(f"[bold red]FEED DOWN[/bold red] ({sync.last_error}) -- "
-                          "[bold red]ENTER PICKS MANUALLY[/bold red]")
-        return
-
-    existing = {p.player.lower() for p in state.purchases}
-    lookup = {v.name.lower(): v for v in vals}
-    for pick in picks:
-        if pick.player.lower() in existing:
-            continue
-        if not state.record_pick(pick.player, pick.position, pick.price,
-                                  pick.team, pick.espn_pick_id):
-            continue
-        existing.add(pick.player.lower())
-        match = lookup.get(pick.player.lower())
-        note = f" (sheet ${match.value}, {match.value - pick.price:+d})" if match else ""
-        console.print(f"[dim][auto][/dim] {pick.player} ${pick.price} -> {pick.team}{note}")
-
-
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--no-sync", action="store_true",
-                        help="disable automatic pick import; manual entry only")
-    parser.add_argument("--replay", metavar="PATH",
-                        help="drive the sync feed from a recorded JSONL fixture "
-                             "instead of live ESPN (for rehearsal)")
-    parser.add_argument("--interval", type=int, default=3,
-                        help="seconds between background polls (default 3)")
-    parser.add_argument("--ws", action="store_true",
-                        help="use the live draft-room websocket instead of polling mDraftDetail")
     parser.add_argument("--join-url-file", type=Path, default=DEFAULT_JOIN_URL_FILE,
-                        help=f"file holding the pasted JOIN URL for --ws (default: {DEFAULT_JOIN_URL_FILE})")
+                        help=f"file holding the pasted JOIN URL (default: {DEFAULT_JOIN_URL_FILE})")
     parser.add_argument("--ws-replay", metavar="PATH",
-                        help="with --ws, drive the console from a recorded ws-log-*.jsonl "
-                             "capture instead of a live socket (for rehearsal) -- no join URL "
+                        help="drive the console from a recorded ws-log-*.jsonl capture "
+                             "instead of a live socket (for rehearsal) -- no join URL "
                              "needed, and never touches data/draft-state.json or "
                              "data/nomination-list.txt")
     parser.add_argument("--replay-speed", type=float, default=1.0,
                         help="--ws-replay playback speed multiplier (default 1.0x the "
                              "capture's own real-time pacing; 0 plays back with no pacing "
                              "at all)")
-    parser.add_argument("--mirror", action="store_true",
-                        help="fallback: listen for the browser mirror snippet instead of --ws")
-    parser.add_argument("--mirror-port", type=int, default=8765,
-                        help="local port the mirror snippet POSTs to (default 8765)")
     parser.add_argument("--my-team", help="team label to use for 'me'/'need'")
     parser.add_argument("--league-id", help="override ESPN_LEAGUE_ID (e.g. a practice draft)")
     parser.add_argument("--team-id", help="override ESPN_TEAM_ID")
@@ -805,13 +619,6 @@ def main() -> int:
                         help="start with an empty draft state instead of loading "
                              "data/draft-state.json (for practice-draft rehearsals)")
     args = parser.parse_args()
-
-    if (args.ws or args.mirror) and (args.no_sync or args.replay):
-        parser.error("--ws/--mirror replace the REST sync path; drop --no-sync/--replay")
-    if args.ws and args.mirror:
-        parser.error("--ws and --mirror are alternatives; pick one")
-    if args.ws_replay and not args.ws:
-        parser.error("--ws-replay only applies with --ws")
 
     vals = load_values()
     if args.ws_replay:
@@ -829,7 +636,6 @@ def main() -> int:
                           "data/draft-state.json will be overwritten on first save.[/yellow]")
     if args.my_team:
         state.my_team = draft_state.normalize_team(args.my_team)
-    lookup = {v.name.lower(): v for v in vals}
 
     cred = config.EspnCredentials()
     if args.league_id:
@@ -838,136 +644,35 @@ def main() -> int:
         cred.team_id = args.team_id
 
     resolver = draft_sync.PlayerResolver(VALUES_PATH)
-    sync: SyncController | None = None
-    ws = None  # WsController, or ws_replay.ReplayController for --ws-replay
-    mirror: MirrorController | None = None
     nomination_list = load_nomination_list(NOMINATION_LIST_PATH)
 
-    if args.ws and args.ws_replay:
+    if args.ws_replay:
         # Imported here, not at module scope: ws_replay imports this module
         # (the same shape ws_console does), so pulling it in only when
         # actually replaying keeps that circularity confined to this branch.
         from ws_replay import ReplayController
 
         ws = ReplayController(Path(args.ws_replay), speed=args.replay_speed)
-        ws.start()
-    elif args.ws:
+        sync_note = f"replay of {args.ws_replay} at {args.replay_speed}x"
+    else:
         join_url = load_join_url(args.join_url_file)
         ws = WsController(join_url, cred)
-        ws.start()
-    elif args.mirror:
-        mirror = MirrorController(args.mirror_port)
-        mirror.start()
-    elif not args.no_sync:
-        if args.replay:
-            source = _replay_source(Path(args.replay))
-        else:
-            source = lambda: draft_sync.fetch_picks(cred)  # noqa: E731
-        sync = SyncController(source, resolver, args.interval)
-        sync.start()
-
-    if args.ws_replay:
-        sync_note = f"replay of {args.ws_replay} at {args.replay_speed}x"
-    elif ws:
         sync_note = "live websocket"
-    elif sync:
-        sync_note = "auto-sync every %ds" % args.interval
-    else:
-        sync_note = "sync disabled, manual only"
+    ws.start()
+
     console.print(f"[bold]Auction console[/bold] -- {config.LEAGUE_NAME}, league {cred.league_id}, "
                   f"${config.SALARY_CAP} cap, {config.ROSTER_SIZE} spots, {sync_note}. "
                   f"{len(state.purchases)} purchases loaded. Type 'quit' to exit.\n")
 
-    if ws:
-        # Imported here, not at module scope: ws_console imports this module,
-        # and the other modes have no reason to pull in textual.
-        from ws_console import run_ws_console
+    # Imported here, not at module scope: ws_console imports this module, and
+    # a bare --help shouldn't need to pull in textual.
+    from ws_console import run_ws_console
 
-        # A replay never writes the starred queue back to the real file --
-        # nomination_list_path=None makes space a harmless no-op instead.
-        list_path = None if args.ws_replay else NOMINATION_LIST_PATH
-        run_ws_console(ws, state, resolver, vals, nomination_list, list_path)
-        ws.client.stop()
-        state.save()
-        console.print("Saved.")
-        return 0
-
-    while True:
-        if sync:
-            _drain_sync(sync, state, vals)
-        elif mirror:
-            for pick in mirror.drain():
-                console.print(f"[bold magenta][mirror][/bold magenta] detected ${pick.get('price')}: "
-                              f"{pick.get('raw')} -- enter manually if this is a real sale.")
-        try:
-            line = console.input("[bold cyan]>[/bold cyan] ").strip()
-        except (EOFError, KeyboardInterrupt):
-            break
-        if not line:
-            continue
-
-        cmd = line.split()
-        head = cmd[0].lower()
-
-        if head in ("quit", "exit", "q"):
-            break
-        if head == "me":
-            show_me(state, vals)
-        elif head == "teams":
-            show_teams(state)
-        elif head == "sync":
-            if sync:
-                sync.wake()
-                time.sleep(0.5)
-                _drain_sync(sync, state, vals)
-            elif ws:
-                console.print("[dim]Live websocket -- nothing to force-sync.[/dim]")
-            else:
-                console.print("[yellow]Sync disabled (--no-sync).[/yellow]")
-        elif head == "market":
-            console.print(market_table(state, vals))
-            console.print(f"Other teams still hold [bold]"
-                          f"${state.dollars_remaining_in_room()}[/bold] combined.")
-        elif head == "undo":
-            removed = state.undo()
-            console.print(f"Removed: {removed}" if removed else "Nothing to undo.")
-        elif head == "need":
-            for pos, count in state.needs(state.my_team).items():
-                if count > 0:
-                    show_best(state, vals, pos, limit=6)
-        elif head == "best":
-            pos = cmd[1] if len(cmd) > 1 and not cmd[1].isdigit() else None
-            n = next((int(c) for c in cmd[1:] if c.isdigit()), 15)
-            show_best(state, vals, pos, n)
-        elif head in ("b", "n"):
-            console.print("[yellow]'b' and 'n' only work in --ws mode.[/yellow]")
-        elif len(cmd) >= 3 and cmd[-2].lstrip("$").isdigit():
-            team = cmd[-1]
-            price = int(cmd[-2].lstrip("$"))
-            name = " ".join(cmd[:-2])
-            match = lookup.get(name.lower())
-            if not match:
-                candidates = [v for k, v in lookup.items() if name.lower() in k]
-                if len(candidates) == 1:
-                    match = candidates[0]
-                elif candidates:
-                    console.print("Ambiguous: " + ", ".join(c.name for c in candidates[:8]))
-                    continue
-            position = match.position if match else "?"
-            canonical = draft_state.normalize_team(team)
-            if canonical not in state.all_teams() and len(state.purchases) > 3:
-                console.print(f"[yellow]New team label '{canonical}'.[/yellow] "
-                              "Typo? 'undo' reverses it.")
-            state.record(match.name if match else name, position, price, team)
-            note = ""
-            if match:
-                delta = match.value - price
-                note = f" (sheet ${match.value}, {delta:+d})"
-            console.print(f"Recorded: {name} ${price} -> {team}{note}")
-        else:
-            console.print("[yellow]Unrecognized.[/yellow] "
-                          "Use: '<player> <price> <team>', b/n (ws mode), or me/best/need/teams/market/undo/quit")
-
+    # A replay never writes the starred queue back to the real file --
+    # nomination_list_path=None makes space a harmless no-op instead.
+    list_path = None if args.ws_replay else NOMINATION_LIST_PATH
+    run_ws_console(ws, state, resolver, vals, nomination_list, list_path)
+    ws.client.stop()
     state.save()
     console.print("Saved.")
     return 0
