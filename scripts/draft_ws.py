@@ -186,7 +186,7 @@ def cmd_replay(in_path: Path) -> int:
     resolver = draft_sync.PlayerResolver(VALUES_PATH)
     # A dedicated scratch path, never the live data/draft-state.json -- a
     # rehearsal must never be able to clobber real draft-day state.
-    state = draft_state.DraftState(my_team="ME", state_path=SCRATCH_STATE_PATH)
+    state = draft_state.DraftState(my_team="MARK", state_path=SCRATCH_STATE_PATH)
 
     imported, duplicates = _replay_pass(in_path, resolver, state)
     console.print(f"Imported {imported} picks, {duplicates} duplicates suppressed.")

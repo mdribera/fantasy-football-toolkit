@@ -59,7 +59,7 @@ class Purchase:
 @dataclass
 class DraftState:
     purchases: list[Purchase] = field(default_factory=list)
-    my_team: str = "ME"
+    my_team: str = "MARK"
     # Pick ids removed by 'undo' this session, so a still-running poller doesn't
     # immediately re-import something just taken back out. Not persisted --
     # ESPN's own state moved on, so this only needs to survive one session.
@@ -357,7 +357,7 @@ class DraftState:
         known = {f.name for f in fields(Purchase)}
         purchases = [Purchase(**{k: v for k, v in p.items() if k in known})
                      for p in raw.get("purchases", [])]
-        return cls(my_team=raw.get("my_team", "ME"), purchases=purchases, state_path=path)
+        return cls(my_team=raw.get("my_team", "MARK"), purchases=purchases, state_path=path)
 
 
 def lineup_slots(

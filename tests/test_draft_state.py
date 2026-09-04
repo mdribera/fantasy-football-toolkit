@@ -62,10 +62,10 @@ def test_forward_inflation_drops_after_an_early_overpay():
         ("Star RB", "RB", 90),
         *[(f"Depth{i}", "RB", 30) for i in range(6)],   # plenty left on the board
     )
-    state.purchases.append(draft_state.Purchase("Star RB", "RB", 100, "FWD"))
+    state.purchases.append(draft_state.Purchase("Star RB", "RB", 100, "TEAM5"))
     state.spots_left = lambda team: 3                        # type: ignore[method-assign]
-    state.all_teams = lambda: ["ME", "FWD"]                  # type: ignore[method-assign]
-    state.budget_left = lambda team: 10 if team == "FWD" else 100  # type: ignore[method-assign]
+    state.all_teams = lambda: ["MARK", "TEAM5"]                  # type: ignore[method-assign]
+    state.budget_left = lambda team: 10 if team == "TEAM5" else 100  # type: ignore[method-assign]
 
     assert state.inflation(vals) > 1.0     # backward: the room overpaid
 
@@ -82,7 +82,7 @@ def test_forward_inflation_by_position_tilts_by_the_backward_read():
     though the aggregate forward rate itself can be well under 1.0 -- that's
     the "positions diverge" half of T6, the part a single global number
     can't represent at all."""
-    state = draft_state.DraftState(my_team="ME")
+    state = draft_state.DraftState(my_team="MARK")
     vals = make_valuations(
         ("Hot QB", "QB", 40),
         ("Cold RB", "RB", 40),
@@ -94,7 +94,7 @@ def test_forward_inflation_by_position_tilts_by_the_backward_read():
     state.purchases.append(draft_state.Purchase("Hot QB", "QB", 60, "RIVAL"))
     state.purchases.append(draft_state.Purchase("Cold RB", "RB", 20, "RIVAL"))
     state.spots_left = lambda team: 1                        # type: ignore[method-assign]
-    state.all_teams = lambda: ["ME", "RIVAL"]                # type: ignore[method-assign]
+    state.all_teams = lambda: ["MARK", "RIVAL"]                # type: ignore[method-assign]
     state.budget_left = lambda team: 100                     # type: ignore[method-assign]
 
     rates = state.forward_inflation_by_position(vals)
@@ -115,75 +115,75 @@ def test_targets_reports_the_full_bench_not_just_starters():
     """needs() alone reports "0 unfilled" for QB at two -- targets() is the
     one that keeps pointing at the third quarterback for byes, per
     config.ROSTER_TARGETS."""
-    state = draft_state.DraftState(my_team="ME")
-    state.record("Josh Allen", "QB", 60, "ME")
-    state.record("Lamar Jackson", "QB", 40, "ME")
-    assert state.needs("ME")["QB"] == 0
-    assert state.targets("ME")["QB"] == 1
+    state = draft_state.DraftState(my_team="MARK")
+    state.record("Josh Allen", "QB", 60, "MARK")
+    state.record("Lamar Jackson", "QB", 40, "MARK")
+    assert state.needs("MARK")["QB"] == 0
+    assert state.targets("MARK")["QB"] == 1
 
 
 def test_needs_starter_true_for_an_unfilled_starting_position():
-    state = draft_state.DraftState(my_team="ME")
-    assert state.needs_starter("ME", "QB") is True
+    state = draft_state.DraftState(my_team="MARK")
+    assert state.needs_starter("MARK", "QB") is True
 
 
 def test_needs_starter_true_for_flex_eligible_once_starters_are_met():
     """RB's own STARTERS count (2) is met, but nothing has filled the open
     FLEX slot yet -- needs() alone would report 0 and miss this."""
-    state = draft_state.DraftState(my_team="ME")
-    state.record("Bijan Robinson", "RB", 54, "ME")
-    state.record("Kenneth Walker III", "RB", 38, "ME")
-    assert state.needs("ME")["RB"] == 0
-    assert state.needs_starter("ME", "RB") is True
+    state = draft_state.DraftState(my_team="MARK")
+    state.record("Bijan Robinson", "RB", 54, "MARK")
+    state.record("Kenneth Walker III", "RB", 38, "MARK")
+    assert state.needs("MARK")["RB"] == 0
+    assert state.needs_starter("MARK", "RB") is True
 
 
 def test_needs_starter_false_once_another_position_has_filled_flex():
     """A third WR beyond WR's own starting requirement fills FLEX, so RB no
     longer needs a starter even though RB itself sits at exactly 2."""
-    state = draft_state.DraftState(my_team="ME")
-    state.record("Bijan Robinson", "RB", 54, "ME")
-    state.record("Kenneth Walker III", "RB", 38, "ME")
-    state.record("Justin Jefferson", "WR", 52, "ME")
-    state.record("Puka Nacua", "WR", 45, "ME")
-    state.record("Amon-Ra St. Brown", "WR", 40, "ME")
-    assert state.needs_starter("ME", "RB") is False
+    state = draft_state.DraftState(my_team="MARK")
+    state.record("Bijan Robinson", "RB", 54, "MARK")
+    state.record("Kenneth Walker III", "RB", 38, "MARK")
+    state.record("Justin Jefferson", "WR", 52, "MARK")
+    state.record("Puka Nacua", "WR", 45, "MARK")
+    state.record("Amon-Ra St. Brown", "WR", 40, "MARK")
+    assert state.needs_starter("MARK", "RB") is False
 
 
 def test_needs_starter_false_for_a_covered_non_flex_position():
     """K and D/ST aren't FLEX-eligible, so meeting their own starting
     requirement is the whole answer -- no FLEX fallback to check."""
-    state = draft_state.DraftState(my_team="ME")
-    state.record("Some Kicker", "K", 1, "ME")
-    assert state.needs_starter("ME", "K") is False
+    state = draft_state.DraftState(my_team="MARK")
+    state.record("Some Kicker", "K", 1, "MARK")
+    assert state.needs_starter("MARK", "K") is False
 
 
 def test_position_counts_with_no_team_sums_across_the_whole_league():
     """T46: the leaguewide DRAFTED panel reuses this per-team helper with no
     team filter, rather than a parallel method -- the per-team call must
     keep filtering exactly as before."""
-    state = draft_state.DraftState(my_team="ME")
-    state.record("Josh Allen", "QB", 60, "ME")
+    state = draft_state.DraftState(my_team="MARK")
+    state.record("Josh Allen", "QB", 60, "MARK")
     state.record("Lamar Jackson", "QB", 40, "RIVAL")
     state.record("Bijan Robinson", "RB", 54, "RIVAL")
 
-    assert state.position_counts("ME") == {"QB": 1}
+    assert state.position_counts("MARK") == {"QB": 1}
     assert state.position_counts() == {"QB": 2, "RB": 1}
 
 
 def test_position_spend_sums_prices_for_one_team():
     """T67: the Roster panel's plan-dollars row reads this per position, so
     it has to sum price, not count, and stay scoped to the requested team."""
-    state = draft_state.DraftState(my_team="ME")
-    state.record("Josh Allen", "QB", 60, "ME")
-    state.record("Lamar Jackson", "QB", 40, "ME")
+    state = draft_state.DraftState(my_team="MARK")
+    state.record("Josh Allen", "QB", 60, "MARK")
+    state.record("Lamar Jackson", "QB", 40, "MARK")
     state.record("Bijan Robinson", "RB", 54, "RIVAL")
 
-    assert state.position_spend("ME") == {"QB": 100}
+    assert state.position_spend("MARK") == {"QB": 100}
 
 
 def test_position_spend_with_no_team_sums_across_the_whole_league():
-    state = draft_state.DraftState(my_team="ME")
-    state.record("Josh Allen", "QB", 60, "ME")
+    state = draft_state.DraftState(my_team="MARK")
+    state.record("Josh Allen", "QB", 60, "MARK")
     state.record("Lamar Jackson", "QB", 40, "RIVAL")
     state.record("Bijan Robinson", "RB", 54, "RIVAL")
 
@@ -205,10 +205,10 @@ def test_forward_inflation_is_none_with_zero_surplus_and_cash_left():
     the room still has real money -- reading that as 1.0 would say "market
     is calm" when there's nothing left to be calm about. It should read as
     no signal at all, and the per-position tilt has nothing to tilt."""
-    state = draft_state.DraftState(my_team="ME")
+    state = draft_state.DraftState(my_team="MARK")
     vals = make_valuations(("Player", "RB", 10))
     state.spots_left = lambda team: 0                         # type: ignore[method-assign]
-    state.all_teams = lambda: ["ME"]                          # type: ignore[method-assign]
+    state.all_teams = lambda: ["MARK"]                          # type: ignore[method-assign]
     state.budget_left = lambda team: 50                       # type: ignore[method-assign]
 
     assert state.forward_inflation(vals) is None
@@ -220,10 +220,10 @@ def test_forward_inflation_clamps_at_forward_rate_max_on_a_tiny_surplus():
     surplus against dollars that are mostly the mandatory $1-per-slot
     floor, not real bidding pressure -- an unclamped ratio would report an
     absurd 30x read instead of the intended 3.0x ceiling."""
-    state = draft_state.DraftState(my_team="ME")
+    state = draft_state.DraftState(my_team="MARK")
     vals = make_valuations(("OnlyPlayer", "RB", 6))   # surplus = 6 - MIN_BID = 5
     state.spots_left = lambda team: 1                         # type: ignore[method-assign]
-    state.all_teams = lambda: ["ME"]                          # type: ignore[method-assign]
+    state.all_teams = lambda: ["MARK"]                          # type: ignore[method-assign]
     state.budget_left = lambda team: 151                      # biddable = 151 - 1 = 150
 
     assert state.remaining_pool_surplus(vals) == 5
@@ -235,10 +235,10 @@ def test_forward_inflation_is_one_when_the_draft_is_over():
     """Zero surplus and zero cash both hitting zero at once is the one
     legitimate case for the 1.0 sentinel: the draft is over, so there is
     nothing left to misjudge and no reason to show "no read"."""
-    state = draft_state.DraftState(my_team="ME")
+    state = draft_state.DraftState(my_team="MARK")
     vals = make_valuations(("Player", "RB", 10))
     state.spots_left = lambda team: 0                         # type: ignore[method-assign]
-    state.all_teams = lambda: ["ME"]                          # type: ignore[method-assign]
+    state.all_teams = lambda: ["MARK"]                          # type: ignore[method-assign]
     state.budget_left = lambda team: 0                        # type: ignore[method-assign]
 
     assert state.forward_inflation(vals) == 1.0
@@ -251,7 +251,7 @@ def test_forward_inflation_by_position_shrinks_a_single_cheap_qb_sale():
     modeled-dollar evidence keeps a thin sample from swinging the read that
     hard, while a handful of at-sheet non-QB sales gives the room a mostly
     calm backward baseline to tilt against."""
-    state = draft_state.DraftState(my_team="ME")
+    state = draft_state.DraftState(my_team="MARK")
     vals = make_valuations(
         ("Cheap QB", "QB", 3),
         *[(f"Filler{i}", "RB", 50) for i in range(5)],
@@ -262,7 +262,7 @@ def test_forward_inflation_by_position_shrinks_a_single_cheap_qb_sale():
     for i in range(5):
         state.purchases.append(draft_state.Purchase(f"Filler{i}", "RB", 50, "RIVAL"))
     state.spots_left = lambda team: 8                         # type: ignore[method-assign]
-    state.all_teams = lambda: ["ME", "RIVAL"]                 # type: ignore[method-assign]
+    state.all_teams = lambda: ["MARK", "RIVAL"]                 # type: ignore[method-assign]
     state.budget_left = lambda team: 150                      # type: ignore[method-assign]
 
     base = state.forward_inflation(vals)
@@ -276,7 +276,7 @@ def test_forward_inflation_by_position_tilt_approaches_raw_ratio_with_more_evide
     TILT_EVIDENCE_DOLLARS, the shrinkage weight w approaches 1 and the tilt
     should converge on the raw (unshrunk) backward-vs-backward ratio,
     rather than staying pinned near 1.0 the way a single cheap sale does."""
-    state = draft_state.DraftState(my_team="ME")
+    state = draft_state.DraftState(my_team="MARK")
     vals = make_valuations(
         *[(f"QB{i}", "QB", 50) for i in range(10)],
         *[(f"RB{i}", "RB", 50) for i in range(10)],
@@ -286,7 +286,7 @@ def test_forward_inflation_by_position_tilt_approaches_raw_ratio_with_more_evide
         state.purchases.append(draft_state.Purchase(f"QB{i}", "QB", 65, "RIVAL"))  # 1.3x sheet
         state.purchases.append(draft_state.Purchase(f"RB{i}", "RB", 50, "RIVAL"))  # at sheet
     state.spots_left = lambda team: 10                        # type: ignore[method-assign]
-    state.all_teams = lambda: ["ME", "RIVAL"]                 # type: ignore[method-assign]
+    state.all_teams = lambda: ["MARK", "RIVAL"]                 # type: ignore[method-assign]
     state.budget_left = lambda team: 400                      # type: ignore[method-assign]
 
     base = state.forward_inflation(vals)
@@ -321,9 +321,9 @@ def test_lineup_slots_starters_go_to_the_top_projected_at_each_position():
     """A third QB beyond the two starting slots goes to bench, ranked below
     both starters regardless of draft order."""
     roster = [
-        draft_state.Purchase("Third QB", "QB", 5, "ME"),
-        draft_state.Purchase("Best QB", "QB", 60, "ME"),
-        draft_state.Purchase("Second QB", "QB", 40, "ME"),
+        draft_state.Purchase("Third QB", "QB", 5, "MARK"),
+        draft_state.Purchase("Best QB", "QB", 60, "MARK"),
+        draft_state.Purchase("Second QB", "QB", 40, "MARK"),
     ]
     projected = _by_name(**{"Best QB": 400, "Second QB": 350, "Third QB": 200})
     slots = draft_state.lineup_slots(roster, projected)
@@ -339,12 +339,12 @@ def test_lineup_slots_flex_takes_the_best_leftover_after_direct_slots_fill():
     already spoken for -- the third RB here outranks the TE but still lands
     in FLEX, not ahead of either starting RB."""
     roster = [
-        draft_state.Purchase("RB1", "RB", 50, "ME"),
-        draft_state.Purchase("RB2", "RB", 40, "ME"),
-        draft_state.Purchase("RB3", "RB", 30, "ME"),
-        draft_state.Purchase("WR1", "WR", 45, "ME"),
-        draft_state.Purchase("WR2", "WR", 35, "ME"),
-        draft_state.Purchase("TE1", "TE", 10, "ME"),
+        draft_state.Purchase("RB1", "RB", 50, "MARK"),
+        draft_state.Purchase("RB2", "RB", 40, "MARK"),
+        draft_state.Purchase("RB3", "RB", 30, "MARK"),
+        draft_state.Purchase("WR1", "WR", 45, "MARK"),
+        draft_state.Purchase("WR2", "WR", 35, "MARK"),
+        draft_state.Purchase("TE1", "TE", 10, "MARK"),
     ]
     projected = _by_name(RB1=300, RB2=250, RB3=200, WR1=280, WR2=260, TE1=150)
     slots = draft_state.lineup_slots(roster, projected)
@@ -359,7 +359,7 @@ def test_lineup_slots_flex_takes_the_best_leftover_after_direct_slots_fill():
 def test_lineup_slots_never_gives_flex_to_a_kicker_or_defense():
     """K and D/ST aren't in config.FLEX_ELIGIBLE, so a lone kicker fills the
     K slot and leaves FLEX empty rather than borrowing it."""
-    roster = [draft_state.Purchase("Some Kicker", "K", 1, "ME")]
+    roster = [draft_state.Purchase("Some Kicker", "K", 1, "MARK")]
     slots = draft_state.lineup_slots(roster, _by_name(**{"Some Kicker": 100}))
     by_label = dict((label, p.player if p else None) for label, p in slots
                     if label in ("K", "FLEX"))
@@ -373,8 +373,8 @@ def test_lineup_slots_ranks_an_unprojected_player_last_at_his_position():
     projection only orders within it -- but sorts behind anyone with a real
     number."""
     roster = [
-        draft_state.Purchase("Known QB", "QB", 55, "ME"),
-        draft_state.Purchase("Unmatched QB", "QB", 30, "ME"),
+        draft_state.Purchase("Known QB", "QB", 55, "MARK"),
+        draft_state.Purchase("Unmatched QB", "QB", 30, "MARK"),
     ]
     projected = _by_name(**{"Known QB": 380})  # "Unmatched QB" has no entry
     slots = draft_state.lineup_slots(roster, projected)
@@ -386,7 +386,7 @@ def test_lineup_slots_sends_an_unknown_position_to_the_bench():
     """draft_sync.PlayerResolver records position "?" for a player it can't
     resolve -- that matches no starting slot, so it falls to the bench like
     any other leftover instead of raising or silently vanishing."""
-    roster = [draft_state.Purchase("Mystery Player", "?", 1, "ME")]
+    roster = [draft_state.Purchase("Mystery Player", "?", 1, "MARK")]
     slots = draft_state.lineup_slots(roster, _by_name(**{"Mystery Player": 999}))
     assert all(p is None for label, p in slots if label != "BE")
     bench_players = [p.player for label, p in slots if label == "BE" and p]
@@ -398,7 +398,7 @@ def test_lineup_slots_never_drops_a_purchase_past_roster_size():
     POSITION_MAX overstacks) grows the bench instead of hiding anyone --
     2 WRs go to the WR starting slots, 1 to FLEX, and all 14 remaining
     overflow the usual 6 bench rows rather than dropping any of them."""
-    roster = [draft_state.Purchase(f"WR{i}", "WR", 1, "ME") for i in range(17)]
+    roster = [draft_state.Purchase(f"WR{i}", "WR", 1, "MARK") for i in range(17)]
     projected = _by_name(**{f"WR{i}": 100 - i for i in range(17)})
     slots = draft_state.lineup_slots(roster, projected)
     bench_rows = [label for label, _ in slots if label == "BE"]

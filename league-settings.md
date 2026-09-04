@@ -145,18 +145,18 @@
 
 ### East
 
-- Love The Drake
-- Nabers think im selling dope
+- Team 1
+- Team 3
 - Team 5
 - Team 7
 - Team 11
 
 ### West
 
-- Aubrey's Revenge
+- Team 2
 - Team 4
-- The QB's Knees
-- Rhodric's Rowdy Team
+- Mark's Mathletes
+- Team 8
 - Team 10
 
 ## Player Rules

@@ -180,53 +180,53 @@ QB_BOARD = [_qb("Josh Allen", 7), _qb("Lamar Jackson", 7), _qb("Jayden Daniels",
 
 
 def test_rostered_qb_bye_clash_finds_a_shared_bye():
-    state = draft_state.DraftState(my_team="ME")
-    state.record("Josh Allen", "QB", 60, "ME")
-    state.record("Lamar Jackson", "QB", 40, "ME")
-    assert auction.rostered_qb_bye_clash(state, "ME", QB_BOARD) == 7
+    state = draft_state.DraftState(my_team="MARK")
+    state.record("Josh Allen", "QB", 60, "MARK")
+    state.record("Lamar Jackson", "QB", 40, "MARK")
+    assert auction.rostered_qb_bye_clash(state, "MARK", QB_BOARD) == 7
 
 
 def test_rostered_qb_bye_clash_is_none_when_byes_differ():
-    state = draft_state.DraftState(my_team="ME")
-    state.record("Josh Allen", "QB", 60, "ME")
-    state.record("Jayden Daniels", "QB", 39, "ME")
-    assert auction.rostered_qb_bye_clash(state, "ME", QB_BOARD) is None
+    state = draft_state.DraftState(my_team="MARK")
+    state.record("Josh Allen", "QB", 60, "MARK")
+    state.record("Jayden Daniels", "QB", 39, "MARK")
+    assert auction.rostered_qb_bye_clash(state, "MARK", QB_BOARD) is None
 
 
 def test_qb_bye_would_clash_checks_a_candidate_before_buying():
-    state = draft_state.DraftState(my_team="ME")
-    state.record("Josh Allen", "QB", 60, "ME")
+    state = draft_state.DraftState(my_team="MARK")
+    state.record("Josh Allen", "QB", 60, "MARK")
     lamar = next(v for v in QB_BOARD if v.name == "Lamar Jackson")
     daniels = next(v for v in QB_BOARD if v.name == "Jayden Daniels")
-    assert auction.qb_bye_would_clash(state, "ME", QB_BOARD, lamar) is True
-    assert auction.qb_bye_would_clash(state, "ME", QB_BOARD, daniels) is False
+    assert auction.qb_bye_would_clash(state, "MARK", QB_BOARD, lamar) is True
+    assert auction.qb_bye_would_clash(state, "MARK", QB_BOARD, daniels) is False
 
 
 def test_me_table_footer_still_wants_the_third_qb_after_starters_are_filled():
     """T8: needs() alone says "all starting slots filled" at two QBs -- the
     `me` footer (used by both the REST console and --ws's :me command) has
     to keep pointing at the third one, not declare victory."""
-    state = draft_state.DraftState(my_team="ME")
-    state.record("Josh Allen", "QB", 60, "ME")
-    state.record("Lamar Jackson", "QB", 40, "ME")
+    state = draft_state.DraftState(my_team="MARK")
+    state.record("Josh Allen", "QB", 60, "MARK")
+    state.record("Lamar Jackson", "QB", 40, "MARK")
     for pos in ("RB", "RB", "WR", "WR", "TE", "D/ST", "K"):
-        state.record(f"Filler {pos} {state.roster_count('ME')}", pos, 1, "ME")
+        state.record(f"Filler {pos} {state.roster_count('MARK')}", pos, 1, "MARK")
     _, footer = auction.me_table(state, QB_BOARD)
     assert "All starting slots filled" in footer
     assert "QB x1" in footer
 
 
 def test_qb_bye_would_clash_ignores_non_qb_and_bye_free_players():
-    state = draft_state.DraftState(my_team="ME")
-    state.record("Josh Allen", "QB", 60, "ME")
+    state = draft_state.DraftState(my_team="MARK")
+    state.record("Josh Allen", "QB", 60, "MARK")
     non_qb = values.Valuation(name="Some RB", position="RB", pro_team="",
                               projected_points=0.0, replacement_points=0.0,
                               vorp=0.0, value=1, bye=7)
     no_bye = values.Valuation(name="No Bye QB", position="QB", pro_team="",
                               projected_points=0.0, replacement_points=0.0,
                               vorp=0.0, value=1, bye=None)
-    assert auction.qb_bye_would_clash(state, "ME", QB_BOARD, non_qb) is False
-    assert auction.qb_bye_would_clash(state, "ME", QB_BOARD, no_bye) is False
+    assert auction.qb_bye_would_clash(state, "MARK", QB_BOARD, non_qb) is False
+    assert auction.qb_bye_would_clash(state, "MARK", QB_BOARD, no_bye) is False
 
 
 def test_bid_verdict_bands():
@@ -264,10 +264,10 @@ BIG_BOARD = [
 
 
 def _board_state(taken_players=()):
-    state = draft_state.DraftState(my_team="ME")
+    state = draft_state.DraftState(my_team="MARK")
     for i, name in enumerate(taken_players):
         state.purchases.append(
-            draft_state.Purchase(player=name, position="RB", price=1, team="ME")
+            draft_state.Purchase(player=name, position="RB", price=1, team="MARK")
         )
     return state
 
@@ -298,7 +298,7 @@ def test_nomination_board_sold_on_includes_drafted_players_with_their_owner():
     rows = auction.nomination_board(BIG_BOARD, state, inflation=1.0, sold="on")
     assert {r.name for r in rows} == {v.name for v in BIG_BOARD}
     allen = next(r for r in rows if r.name == "Josh Allen")
-    assert allen.owner == "ME"
+    assert allen.owner == "MARK"
     lamar = next(r for r in rows if r.name == "Lamar Jackson")
     assert lamar.owner is None
 
@@ -307,7 +307,7 @@ def test_nomination_board_sold_only_shows_just_drafted_players():
     state = _board_state(["Josh Allen"])
     rows = auction.nomination_board(BIG_BOARD, state, inflation=1.0, sold="only")
     assert [r.name for r in rows] == ["Josh Allen"]
-    assert rows[0].owner == "ME"
+    assert rows[0].owner == "MARK"
 
 
 def test_nomination_board_applies_inflation_to_adjusted():
@@ -402,7 +402,7 @@ def test_nomination_board_dict_rate_falls_back_to_none_overall():
     rather than silently reusing a stale or wrong number."""
     state = _board_state()
     state.spots_left = lambda team: 0                        # type: ignore[method-assign]
-    state.all_teams = lambda: ["ME"]                          # type: ignore[method-assign]
+    state.all_teams = lambda: ["MARK"]                          # type: ignore[method-assign]
     state.budget_left = lambda team: 50                       # type: ignore[method-assign]
 
     rows = auction.nomination_board(BIG_BOARD, state, inflation={"QB": 1.2})
@@ -461,7 +461,7 @@ def test_evaluate_bid_refuses_when_you_already_hold_the_high():
 def test_load_state_fresh_ignores_an_existing_file(tmp_path):
     path = tmp_path / "draft-state.json"
     draft_state.DraftState(
-        purchases=[draft_state.Purchase("Lamar Jackson", "QB", 62, "FWD")],
+        purchases=[draft_state.Purchase("Lamar Jackson", "QB", 62, "TEAM5")],
         state_path=path,
     ).save()
     state = auction.load_state(fresh=True, path=path)
@@ -471,7 +471,7 @@ def test_load_state_fresh_ignores_an_existing_file(tmp_path):
 def test_load_state_not_fresh_loads_existing_data(tmp_path):
     path = tmp_path / "draft-state.json"
     draft_state.DraftState(
-        purchases=[draft_state.Purchase("Lamar Jackson", "QB", 62, "FWD")],
+        purchases=[draft_state.Purchase("Lamar Jackson", "QB", 62, "TEAM5")],
         state_path=path,
     ).save()
     state = auction.load_state(fresh=False, path=path)
@@ -481,7 +481,7 @@ def test_load_state_not_fresh_loads_existing_data(tmp_path):
 def test_load_state_fresh_backs_up_the_existing_file(tmp_path):
     path = tmp_path / "draft-state.json"
     draft_state.DraftState(
-        purchases=[draft_state.Purchase("Lamar Jackson", "QB", 62, "FWD")],
+        purchases=[draft_state.Purchase("Lamar Jackson", "QB", 62, "TEAM5")],
         state_path=path,
     ).save()
     auction.load_state(fresh=True, path=path)
@@ -529,7 +529,7 @@ def test_reconcile_init_adds_sales_the_console_never_witnessed(tmp_path):
 
     assert len(report.added) == 1
     added = report.added[0]
-    assert (added.player, added.team, added.price) == ("Bijan Robinson", "AUBREY", 10)
+    assert (added.player, added.team, added.price) == ("Bijan Robinson", "TEAM2", 10)
     assert report.corrected == ()
     assert report.removed == ()
     assert [p.player for p in state.purchases] == ["Bijan Robinson"]
@@ -538,7 +538,7 @@ def test_reconcile_init_adds_sales_the_console_never_witnessed(tmp_path):
 def test_reconcile_init_is_a_no_op_when_state_already_matches(tmp_path):
     path = tmp_path / "draft-state.json"
     state = draft_state.DraftState(
-        purchases=[draft_state.Purchase("Bijan Robinson", "RB", 10, "AUBREY", 4241478)],
+        purchases=[draft_state.Purchase("Bijan Robinson", "RB", 10, "TEAM2", 4241478)],
         state_path=path,
     )
     init = _init([draft_ws.InitPick(pick_number=1, team_id=2, player_id=4241478, price=10)])
@@ -552,7 +552,7 @@ def test_reconcile_init_is_a_no_op_when_state_already_matches(tmp_path):
 def test_reconcile_init_overwrites_a_conflicting_local_purchase(tmp_path):
     path = tmp_path / "draft-state.json"
     state = draft_state.DraftState(
-        purchases=[draft_state.Purchase("Bijan Robinson", "RB", 8, "ME", 4241478)],
+        purchases=[draft_state.Purchase("Bijan Robinson", "RB", 8, "MARK", 4241478)],
         state_path=path,
     )
     init = _init([draft_ws.InitPick(pick_number=1, team_id=2, player_id=4241478, price=10)])
@@ -561,15 +561,15 @@ def test_reconcile_init_overwrites_a_conflicting_local_purchase(tmp_path):
 
     assert len(report.corrected) == 1
     fixed = report.corrected[0]
-    assert (fixed.team, fixed.price) == ("AUBREY", 10)
+    assert (fixed.team, fixed.price) == ("TEAM2", 10)
     assert len(state.purchases) == 1
-    assert (state.purchases[0].team, state.purchases[0].price) == ("AUBREY", 10)
+    assert (state.purchases[0].team, state.purchases[0].price) == ("TEAM2", 10)
 
 
 def test_reconcile_init_removes_a_purchase_the_server_does_not_have(tmp_path):
     path = tmp_path / "draft-state.json"
     state = draft_state.DraftState(
-        purchases=[draft_state.Purchase("Ghost Player", "RB", 5, "ME")],
+        purchases=[draft_state.Purchase("Ghost Player", "RB", 5, "MARK")],
         state_path=path,
     )
     init = _init([])  # nothing sold according to the server
@@ -587,7 +587,7 @@ def test_reconcile_init_matches_a_hand_typed_purchase_by_name(tmp_path):
     # than treating it as both a duplicate add and a stale local extra.
     path = tmp_path / "draft-state.json"
     state = draft_state.DraftState(state_path=path)
-    state.record("Bijan Robinson", "RB", 10, "AUBREY")
+    state.record("Bijan Robinson", "RB", 10, "TEAM2")
     init = _init([draft_ws.InitPick(pick_number=1, team_id=2, player_id=4241478, price=10)])
 
     report = auction.reconcile_init(state, init, RESOLVER)

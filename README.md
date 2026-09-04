@@ -1,6 +1,6 @@
 # SuperFun Football League
 
-Tooling for managing **The QB's Knees** in a 10-team ESPN fantasy football
+Tooling for managing **Mark's Mathletes** in a 10-team ESPN fantasy football
 league: salary cap auction, $200 budget, full PPR, **two starting
 quarterbacks**.
 

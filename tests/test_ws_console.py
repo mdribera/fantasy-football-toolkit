@@ -134,7 +134,7 @@ def _stub_closed_league(state, vals) -> None:
     much deeper board -- true of the fixture, but not what these tests are
     checking, which is the display wiring, not the forward-inflation math
     itself (see tests/test_draft_state.py for that)."""
-    state.all_teams = lambda: ["ME"]                            # type: ignore[method-assign]
+    state.all_teams = lambda: ["MARK"]                            # type: ignore[method-assign]
     state.spots_left = lambda team: len(vals)                   # type: ignore[method-assign]
     surplus = state.remaining_pool_surplus(vals)
     state.budget_left = lambda team: surplus + len(vals)        # type: ignore[method-assign]
@@ -144,7 +144,7 @@ def _stub_no_read(state) -> None:
     """T36a: force forward_inflation into its no-read state -- zero sheet
     surplus left to buy (every slot already spoken for) but real cash still
     in the room -- regardless of what valuations it's handed."""
-    state.all_teams = lambda: ["ME"]                            # type: ignore[method-assign]
+    state.all_teams = lambda: ["MARK"]                            # type: ignore[method-assign]
     state.spots_left = lambda team: 0                           # type: ignore[method-assign]
     state.budget_left = lambda team: 50                         # type: ignore[method-assign]
 
@@ -172,7 +172,7 @@ def make_app(tmp_path, nomination_list=("Justin Jefferson", "Kenneth Walker III"
     values_path = tmp_path / "values.json"
     values_path.write_text(json.dumps(rows))
     vals = [values.Valuation(**row) for row in rows]
-    state = draft_state.DraftState(my_team="ME", state_path=tmp_path / "draft-state.json")
+    state = draft_state.DraftState(my_team="MARK", state_path=tmp_path / "draft-state.json")
     resolver = draft_sync.PlayerResolver(values_path)
     ws = FakeWsController()
     app = ws_console.TextualWsApp(ws, state, resolver, vals, list(nomination_list),
@@ -279,7 +279,7 @@ async def test_bid_updates_the_status_panel_and_log(tmp_path):
         await pilot.pause()
         assert "Bijan Robinson" in app.status.nominee
         assert app.status.high_bid == 54
-        assert app.status.high_bidder == "CCT"
+        assert app.status.high_bidder == "TEAM4"
 
 
 @pytest.mark.asyncio
@@ -290,7 +290,7 @@ async def test_chat_event_renders_team_and_text(tmp_path):
         await app._poll()
         await pilot.pause()
         text = "\n".join(str(line) for line in app.chat.lines)
-        assert "CCT" in text
+        assert "TEAM4" in text
         assert "$100 for Allen" in text
 
 
@@ -310,8 +310,8 @@ async def test_chat_event_does_not_disturb_the_bid_log_or_clear_on_nominee_chang
 
         assert len(app.chat.lines) == 1
         bidlog_text = "".join(line.text for line in app.bidlog.lines)
-        assert "CCT" not in bidlog_text  # the first nominee's bidder is gone
-        assert "SLAY" in bidlog_text  # the new nominee's bid is what's left
+        assert "TEAM4" not in bidlog_text  # the first nominee's bidder is gone
+        assert "TEAM11" in bidlog_text  # the new nominee's bid is what's left
 
 
 @pytest.mark.asyncio
@@ -368,7 +368,7 @@ def test_status_panel_breaks_after_the_name_and_reverses_high_and_clock():
     panel = ws_console.StatusPanel()
     panel.nominee = "Bijan Robinson (RB, ATL)"
     panel.high_bid = 54
-    panel.high_bidder = "CCT"
+    panel.high_bidder = "TEAM4"
     panel.sheet_value = 43
     panel.clock_s = 20                      # plenty of time -- yellow, not red
     text = panel.render()
@@ -434,9 +434,9 @@ async def test_draft_counts_sums_across_the_whole_league(tmp_path):
     """The DRAFTED panel is a leaguewide sum, not just our own roster --
     confirmed against two teams' picks at the same position."""
     app, ws, state = make_app(tmp_path)
-    state.record("Josh Allen", "QB", 60, "ME")
-    state.record("Lamar Jackson", "QB", 40, "CCT")
-    state.record("Bijan Robinson", "RB", 43, "CCT")
+    state.record("Josh Allen", "QB", 60, "MARK")
+    state.record("Lamar Jackson", "QB", 40, "TEAM4")
+    state.record("Bijan Robinson", "RB", 43, "TEAM4")
     async with app.run_test() as pilot:
         app._refresh_panels()
         await pilot.pause()
@@ -516,13 +516,13 @@ async def test_sold_records_the_purchase_once(tmp_path):
     assert len(state.purchases) == 1
     assert state.purchases[0].player == "Bijan Robinson"
     assert state.purchases[0].price == 54
-    assert state.purchases[0].team == "CCT"
+    assert state.purchases[0].team == "TEAM4"
 
 
 @pytest.mark.asyncio
 async def test_sold_skips_a_pick_already_entered_by_hand(tmp_path):
     app, ws, state = make_app(tmp_path)
-    state.record("Bijan Robinson", "RB", 54, "CCT")
+    state.record("Bijan Robinson", "RB", 54, "TEAM4")
     async with app.run_test() as pilot:
         ws.feed(draft_ws.Sold(4, 3915511, 1, 54, 0))
         await app._poll()
@@ -544,8 +544,8 @@ async def test_sale_log_shows_completed_sales_oldest_first(tmp_path):
         await app._poll()
         await pilot.pause()
     assert _sale_rows(app) == [
-        ("Bijan Robinson", "RB", "CCT", "$54", "-11"),
-        ("Justin Jefferson", "WR", "CCT", "$40", "+12"),
+        ("Bijan Robinson", "RB", "TEAM4", "$54", "-11"),
+        ("Justin Jefferson", "WR", "TEAM4", "$40", "+12"),
     ]
 
 
@@ -556,10 +556,10 @@ async def test_sale_log_shows_a_dash_for_a_player_off_the_board(tmp_path):
     value or edge from."""
     app, ws, state = make_app(tmp_path)
     async with app.run_test() as pilot:
-        state.record_pick("Mystery Player", "K", 1, "HH", espn_pick_id=42)
+        state.record_pick("Mystery Player", "K", 1, "TEAM7", espn_pick_id=42)
         app._refresh_panels()
         await pilot.pause()
-    assert ("Mystery Player", "K", "HH", "$1", "-") in _sale_rows(app)
+    assert ("Mystery Player", "K", "TEAM7", "$1", "-") in _sale_rows(app)
 
 
 @pytest.mark.asyncio
@@ -568,12 +568,12 @@ async def test_sale_log_survives_an_init_reconcile(tmp_path):
     appended on Sold, so it stays correct across a reconnect -- INIT rewrites
     purchases wholesale and never passes through the Sold branch at all."""
     app, ws, state = make_app(tmp_path)
-    blob = _build_init_blob(999, {1: (6, 3915511, 54)})   # team 6 = ME
+    blob = _build_init_blob(999, {1: (6, 3915511, 54)})   # team 6 = MARK
     async with app.run_test() as pilot:
         ws.feed(draft_ws.Init(blob))
         await app._poll()
         await pilot.pause()
-    assert ("Bijan Robinson", "RB", "ME", "$54", "-11") in _sale_rows(app)
+    assert ("Bijan Robinson", "RB", "MARK", "$54", "-11") in _sale_rows(app)
 
 
 @pytest.mark.asyncio
@@ -590,7 +590,7 @@ async def test_sale_log_stays_pinned_to_the_bottom_on_a_non_sale_refresh(tmp_pat
     app, ws, state = make_app(tmp_path)
     async with app.run_test(size=(120, 40)) as pilot:
         for i in range(20):
-            state.record_pick(f"Mystery Player {i}", "K", 1, "HH", espn_pick_id=i)
+            state.record_pick(f"Mystery Player {i}", "K", 1, "TEAM7", espn_pick_id=i)
         app._refresh_panels()
         await pilot.pause()
         ws.feed(draft_ws.Clock(state=2, remaining_ms=5000, high_bid_team=1,
@@ -613,7 +613,7 @@ async def test_sale_log_does_not_rebuild_when_no_sale_landed(tmp_path):
     since the last render."""
     app, ws, state = make_app(tmp_path)
     async with app.run_test() as pilot:
-        state.record_pick("Mystery Player", "K", 1, "HH", espn_pick_id=1)
+        state.record_pick("Mystery Player", "K", 1, "TEAM7", espn_pick_id=1)
         app._refresh_panels()
         await pilot.pause()
         clear_calls = 0
@@ -642,7 +642,7 @@ async def test_sale_log_appends_a_real_sale_without_clearing(tmp_path):
     gone from the no-op Clock-only refreshes."""
     app, ws, state = make_app(tmp_path)
     async with app.run_test() as pilot:
-        state.record_pick("Mystery Player 1", "K", 1, "HH", espn_pick_id=1)
+        state.record_pick("Mystery Player 1", "K", 1, "TEAM7", espn_pick_id=1)
         app._refresh_panels()
         await pilot.pause()
         clear_calls = 0
@@ -654,7 +654,7 @@ async def test_sale_log_appends_a_real_sale_without_clearing(tmp_path):
             return original_clear(*args, **kwargs)
 
         app.salelog.clear = counting_clear
-        state.record_pick("Mystery Player 2", "K", 1, "HH", espn_pick_id=2)
+        state.record_pick("Mystery Player 2", "K", 1, "TEAM7", espn_pick_id=2)
         app._refresh_panels()
         await pilot.pause()
     assert clear_calls == 0
@@ -669,15 +669,15 @@ async def test_sale_log_rebuilds_on_an_init_correction(tmp_path):
     needs the full clear-and-rebuild path."""
     app, ws, state = make_app(tmp_path)
     async with app.run_test() as pilot:
-        state.record_pick("Bijan Robinson", "RB", 40, "HH", espn_pick_id=3915511)
+        state.record_pick("Bijan Robinson", "RB", 40, "TEAM7", espn_pick_id=3915511)
         app._refresh_panels()
         await pilot.pause()
         blob = _build_init_blob(999, {1: (6, 3915511, 54)})
         ws.feed(draft_ws.Init(blob))
         await app._poll()
         await pilot.pause()
-    assert ("Bijan Robinson", "RB", "ME", "$54", "-11") in _sale_rows(app)
-    assert ("Bijan Robinson", "RB", "HH", "$40", "3") not in _sale_rows(app)
+    assert ("Bijan Robinson", "RB", "MARK", "$54", "-11") in _sale_rows(app)
+    assert ("Bijan Robinson", "RB", "TEAM7", "$40", "3") not in _sale_rows(app)
 
 
 def _build_init_blob(league_id: int, sales: dict[int, tuple[int, int, int]]) -> str:
@@ -700,14 +700,14 @@ def _build_init_blob(league_id: int, sales: dict[int, tuple[int, int, int]]) -> 
 @pytest.mark.asyncio
 async def test_init_backfills_a_sale_the_console_never_witnessed(tmp_path):
     app, ws, state = make_app(tmp_path)
-    blob = _build_init_blob(999, {1: (6, 3915511, 54)})  # team 6 = ME
+    blob = _build_init_blob(999, {1: (6, 3915511, 54)})  # team 6 = MARK
     async with app.run_test() as pilot:
         ws.feed(draft_ws.Init(blob))
         await app._poll()
         await pilot.pause()
     assert len(state.purchases) == 1
     assert state.purchases[0].player == "Bijan Robinson"
-    assert state.purchases[0].team == "ME"
+    assert state.purchases[0].team == "MARK"
     assert state.purchases[0].price == 54
 
 
@@ -738,8 +738,8 @@ async def test_init_with_only_additions_shows_a_non_alert_banner(tmp_path):
 @pytest.mark.asyncio
 async def test_init_conflict_overwrites_local_state_and_alerts(tmp_path):
     app, ws, state = make_app(tmp_path)
-    state.record("Bijan Robinson", "RB", 40, "CCT")  # local: wrong team/price
-    blob = _build_init_blob(999, {1: (6, 3915511, 54)})  # server: ME, $54
+    state.record("Bijan Robinson", "RB", 40, "TEAM4")  # local: wrong team/price
+    blob = _build_init_blob(999, {1: (6, 3915511, 54)})  # server: MARK, $54
     async with app.run_test() as pilot:
         ws.feed(draft_ws.Init(blob))
         await app._poll()
@@ -747,14 +747,14 @@ async def test_init_conflict_overwrites_local_state_and_alerts(tmp_path):
         assert app.banner.showing
         assert app.banner.has_class("alert")
     assert len(state.purchases) == 1
-    assert state.purchases[0].team == "ME"
+    assert state.purchases[0].team == "MARK"
     assert state.purchases[0].price == 54
 
 
 @pytest.mark.asyncio
 async def test_init_removes_a_local_purchase_the_server_does_not_have(tmp_path):
     app, ws, state = make_app(tmp_path)
-    state.record("Ghost Player", "RB", 5, "ME")
+    state.record("Ghost Player", "RB", 5, "MARK")
     blob = _build_init_blob(999, {})  # nothing sold according to the server
     async with app.run_test() as pilot:
         ws.feed(draft_ws.Init(blob))
@@ -768,7 +768,7 @@ async def test_init_removes_a_local_purchase_the_server_does_not_have(tmp_path):
 @pytest.mark.asyncio
 async def test_init_with_no_changes_stays_silent(tmp_path):
     app, ws, state = make_app(tmp_path)
-    state.purchases.append(draft_state.Purchase("Bijan Robinson", "RB", 54, "ME", 3915511))
+    state.purchases.append(draft_state.Purchase("Bijan Robinson", "RB", 54, "MARK", 3915511))
     blob = _build_init_blob(999, {1: (6, 3915511, 54)})
     async with app.run_test() as pilot:
         ws.feed(draft_ws.Init(blob))
@@ -791,7 +791,7 @@ async def test_init_undecodable_blob_alerts_instead_of_crashing(tmp_path):
 @pytest.mark.asyncio
 async def test_init_backs_up_state_before_reconciling(tmp_path):
     app, ws, state = make_app(tmp_path)
-    state.record("Ghost Player", "RB", 5, "ME")
+    state.record("Ghost Player", "RB", 5, "MARK")
     blob = _build_init_blob(999, {})
     async with app.run_test() as pilot:
         ws.feed(draft_ws.Init(blob))
@@ -864,7 +864,7 @@ async def test_banner_height_stays_one_row_for_a_long_alert(tmp_path):
     longest alert in the console (the SOLD-conflict path) must not grow it,
     which is what the old height: auto banner used to do."""
     app, ws, state = make_app(tmp_path)
-    state.record_pick("Bijan Robinson", "RB", 40, "HH", espn_pick_id=9999999)
+    state.record_pick("Bijan Robinson", "RB", 40, "TEAM7", espn_pick_id=9999999)
     async with app.run_test() as pilot:
         ws.feed(draft_ws.Sold(4, 3915511, 1, 54, 0))    # Bijan Robinson, different team/price
         await app._poll()
@@ -883,7 +883,7 @@ async def test_banner_truncates_a_long_alert_with_an_ellipsis(tmp_path):
     detail also reaches the bid log via _flash) -- only the on-screen row is
     cut."""
     app, ws, state = make_app(tmp_path)
-    state.record_pick("Bijan Robinson", "RB", 40, "HH", espn_pick_id=9999999)
+    state.record_pick("Bijan Robinson", "RB", 40, "TEAM7", espn_pick_id=9999999)
     async with app.run_test() as pilot:                 # default size (80, 24)
         ws.feed(draft_ws.Sold(4, 3915511, 1, 54, 0))
         await app._poll()
@@ -898,7 +898,7 @@ async def test_banner_truncates_a_long_alert_with_an_ellipsis(tmp_path):
 async def test_roster_panel_tracks_budget_and_slots(tmp_path):
     app, ws, state = make_app(tmp_path)
     async with app.run_test() as pilot:
-        state.record("Justin Jefferson", "WR", 52, "ME")
+        state.record("Justin Jefferson", "WR", 52, "MARK")
         app._refresh_panels()
         await pilot.pause()
         assert app.roster.budget_left == 148
@@ -931,9 +931,9 @@ async def test_roster_table_flex_takes_the_best_leftover_after_starters_fill(tmp
     the third-best RB fills FLEX rather than bumping either starter."""
     app, ws, state = make_app(tmp_path)
     async with app.run_test() as pilot:
-        state.record("Bijan Robinson", "RB", 54, "ME")
-        state.record("Kenneth Walker III", "RB", 38, "ME")
-        state.record("Tony Pollard", "RB", 22, "ME")
+        state.record("Bijan Robinson", "RB", 54, "MARK")
+        state.record("Kenneth Walker III", "RB", 38, "MARK")
+        state.record("Tony Pollard", "RB", 22, "MARK")
         app._refresh_panels()
         await pilot.pause()
         rows = _roster_rows(app)
@@ -959,7 +959,7 @@ async def test_roster_table_keeps_every_player_as_the_roster_grows(tmp_path):
             ("Jonathan Taylor", "RB", 45),
             ("Justin Jefferson", "WR", 36),
         ]:
-            state.record(player, position, price, "ME")
+            state.record(player, position, price, "MARK")
             app._refresh_panels()
             await pilot.pause()
         rows = _roster_rows(app)
@@ -1099,8 +1099,8 @@ async def test_roster_header_colors_by_need_and_target(tmp_path):
     ramp DRAFTED and the Teams Left column use instead of a second line of
     prose. Exact counts move to `:me`'s footer."""
     app, ws, state = make_app(tmp_path)
-    state.record("Josh Allen", "QB", 60, "ME")
-    state.record("Lamar Jackson", "QB", 40, "ME")
+    state.record("Josh Allen", "QB", 60, "MARK")
+    state.record("Lamar Jackson", "QB", 40, "MARK")
     async with app.run_test() as pilot:
         app._refresh_panels()
         await pilot.pause()
@@ -1134,7 +1134,7 @@ async def test_roster_header_counts_and_plan_cells_share_widths(tmp_path):
     position label of its own, which only reads as one unit per position if
     the two cells actually share a column width."""
     app, ws, state = make_app(tmp_path)
-    state.record("Bijan Robinson", "RB", 30, "ME")
+    state.record("Bijan Robinson", "RB", 30, "MARK")
     async with app.run_test() as pilot:
         app._refresh_panels()
         await pilot.pause()
@@ -1161,7 +1161,7 @@ async def test_roster_plan_left_starts_at_the_full_subtotal(tmp_path):
 @pytest.mark.asyncio
 async def test_roster_plan_left_drops_by_the_purchase_price(tmp_path):
     app, ws, state = make_app(tmp_path)
-    state.record("Bijan Robinson", "RB", 30, "ME")
+    state.record("Bijan Robinson", "RB", 30, "MARK")
     async with app.run_test() as pilot:
         app._refresh_panels()
         await pilot.pause()
@@ -1174,8 +1174,8 @@ async def test_roster_header_renders_an_overspent_position_as_negative(tmp_path)
     """Buying past a position's plan share must read as "-$N", never the
     unreadable "$-N" a bare f-string would produce."""
     app, ws, state = make_app(tmp_path)
-    state.record("Bijan Robinson", "RB", 60, "ME")
-    state.record("Kenneth Walker III", "RB", 60, "ME")
+    state.record("Bijan Robinson", "RB", 60, "MARK")
+    state.record("Kenneth Walker III", "RB", 60, "MARK")
     async with app.run_test() as pilot:
         app._refresh_panels()
         await pilot.pause()
@@ -1214,8 +1214,8 @@ async def test_roster_table_region_survives_an_overspent_position(tmp_path):
     regardless of what it renders."""
     app, ws, state = make_app(tmp_path)
     async with app.run_test(size=(120, 40)) as pilot:
-        state.record("Bijan Robinson", "RB", 60, "ME")
-        state.record("Kenneth Walker III", "RB", 60, "ME")   # pushes RB negative
+        state.record("Bijan Robinson", "RB", 60, "MARK")
+        state.record("Kenneth Walker III", "RB", 60, "MARK")   # pushes RB negative
         app._refresh_panels()
         await pilot.pause()
         header = app.query_one("#roster-header")
@@ -1229,7 +1229,7 @@ async def test_status_flags_a_qb_bye_clash_on_the_nominated_player(tmp_path):
     """T8: nominating a QB who'd share a bye with one already on the roster
     has to be visible before the bid goes in, not discovered afterward."""
     app, ws, state = make_app(tmp_path, rows=QB_FIXTURE_ROWS)
-    state.record("Josh Allen", "QB", 60, "ME")       # bye week 7
+    state.record("Josh Allen", "QB", 60, "MARK")       # bye week 7
     async with app.run_test() as pilot:
         ws.feed(draft_ws.Bid(4, 3916387, 30, 25000, 12731))   # Lamar Jackson, also bye 7
         await app._poll()
@@ -1251,29 +1251,29 @@ async def test_selecting_another_team_repoints_the_roster(tmp_path):
     budget, so highlighting a row in TeamList is the only thing that has to
     change."""
     app, ws, state = make_app(tmp_path)
-    state.record("Justin Jefferson", "WR", 52, "ME")
-    state.record("Bijan Robinson", "RB", 43, "CCT")
+    state.record("Justin Jefferson", "WR", 52, "MARK")
+    state.record("Bijan Robinson", "RB", 43, "TEAM4")
     async with app.run_test() as pilot:
         app._refresh_panels()
         await pilot.pause()
-        assert "CCT" in app._team_rows
-        app.team_list.move_cursor(row=app._team_rows.index("CCT"))
+        assert "TEAM4" in app._team_rows
+        app.team_list.move_cursor(row=app._team_rows.index("TEAM4"))
         await pilot.pause()
-        assert app.selected_team == "CCT"
+        assert app.selected_team == "TEAM4"
         assert ("RB", "Bijan Robinson", "RB", "ATL", "T2", "-", "300", "$43", "$43", "+0") in _roster_rows(app)
-        assert app.roster.budget_left == state.budget_left("CCT")
+        assert app.roster.budget_left == state.budget_left("TEAM4")
 
 
 @pytest.mark.asyncio
 async def test_team_command_selects_and_snaps_back(tmp_path):
     app, ws, state = make_app(tmp_path)
     async with app.run_test() as pilot:
-        app._run_command("team CCT")
+        app._run_command("team TEAM4")
         await pilot.pause()
-        assert app.selected_team == "CCT"
+        assert app.selected_team == "TEAM4"
         app._run_command("team")   # no argument snaps back to our own team
         await pilot.pause()
-        assert app.selected_team == "ME"
+        assert app.selected_team == "MARK"
 
 
 @pytest.mark.asyncio
@@ -1283,12 +1283,12 @@ async def test_team_list_cursor_survives_a_refresh_tick(tmp_path):
     rather than resetting the cursor out from under Mark."""
     app, ws, state = make_app(tmp_path)
     async with app.run_test() as pilot:
-        app._run_command("team CCT")
+        app._run_command("team TEAM4")
         await pilot.pause()
         app._refresh_panels()
         await pilot.pause()
-        assert app.selected_team == "CCT"
-        assert app.team_list.cursor_row == app._team_rows.index("CCT")
+        assert app.selected_team == "TEAM4"
+        assert app.team_list.cursor_row == app._team_rows.index("TEAM4")
 
 
 def test_left_cell_gradient_is_red_at_zero_and_green_at_a_full_cap(tmp_path):
@@ -1311,19 +1311,19 @@ async def test_team_list_left_column_reflects_each_teams_own_gradient(tmp_path):
     against two teams at different spend levels rather than just the cell
     helper in isolation, so a refresh tick's wiring is covered too."""
     app, ws, state = make_app(tmp_path)
-    state.record("Justin Jefferson", "WR", 52, "ME")     # ME: $148 left, mostly green
-    state.record("Bijan Robinson", "RB", 43, "CCT")       # CCT: $157 left, closer to full
+    state.record("Justin Jefferson", "WR", 52, "MARK")     # MARK: $148 left, mostly green
+    state.record("Bijan Robinson", "RB", 43, "TEAM4")       # TEAM4: $157 left, closer to full
     async with app.run_test() as pilot:
         app._refresh_panels()
         await pilot.pause()
         rows = {app.team_list.get_row_at(i)[0].plain: app.team_list.get_row_at(i)[1]
                 for i in range(app.team_list.row_count)}
-        me_expected = app._left_cell(state.budget_left("ME"))
-        cct_expected = app._left_cell(state.budget_left("CCT"))
-        assert (rows["ME"].plain, rows["ME"].style) == (me_expected.plain, me_expected.style)
-        assert (rows["CCT"].plain, rows["CCT"].style) == (cct_expected.plain, cct_expected.style)
+        me_expected = app._left_cell(state.budget_left("MARK"))
+        cct_expected = app._left_cell(state.budget_left("TEAM4"))
+        assert (rows["MARK"].plain, rows["MARK"].style) == (me_expected.plain, me_expected.style)
+        assert (rows["TEAM4"].plain, rows["TEAM4"].style) == (cct_expected.plain, cct_expected.style)
         # Different budgets land at different points on the gradient.
-        assert rows["ME"].style != rows["CCT"].style
+        assert rows["MARK"].style != rows["TEAM4"].style
 
 
 @pytest.mark.asyncio
@@ -1332,43 +1332,43 @@ async def test_team_list_shows_max_bid_and_spots_left_per_team(tmp_path):
     two RosterPanel's header already computes for whichever team is
     selected, without needing a select per rival to see one."""
     app, ws, state = make_app(tmp_path)
-    state.record("Justin Jefferson", "WR", 52, "ME")
+    state.record("Justin Jefferson", "WR", 52, "MARK")
     async with app.run_test() as pilot:
         app._refresh_panels()
         await pilot.pause()
         rows = {app.team_list.get_row_at(i)[0].plain: app.team_list.get_row_at(i)
                 for i in range(app.team_list.row_count)}
-        assert rows["ME"][2] == f"${state.max_bid('ME')}"
-        assert rows["ME"][3] == str(state.spots_left("ME"))
-        assert rows["CCT"][2] == f"${state.max_bid('CCT')}"
-        assert rows["CCT"][3] == str(state.spots_left("CCT"))
-        # ME spent $52 and CCT is untouched, so their numbers must diverge --
+        assert rows["MARK"][2] == f"${state.max_bid('MARK')}"
+        assert rows["MARK"][3] == str(state.spots_left("MARK"))
+        assert rows["TEAM4"][2] == f"${state.max_bid('TEAM4')}"
+        assert rows["TEAM4"][3] == str(state.spots_left("TEAM4"))
+        # MARK spent $52 and TEAM4 is untouched, so their numbers must diverge --
         # not just both reading some shared default.
-        assert rows["ME"][2] != rows["CCT"][2]
-        assert rows["ME"][3] != rows["CCT"][3]
+        assert rows["MARK"][2] != rows["TEAM4"][2]
+        assert rows["MARK"][3] != rows["TEAM4"][3]
 
 
 def test_order_teams_follows_the_learned_nomination_cycle():
-    teams = ["AUBREY", "CCT", "DRAKE", "FWD", "HH", "LEWE", "ME", "PITTS", "RRT", "SLAY"]
+    teams = ["TEAM2", "TEAM4", "TEAM1", "TEAM5", "TEAM7", "TEAM3", "MARK", "TEAM10", "TEAM8", "TEAM11"]
     order_ids = [2, 5, 1, 4, 11, 3, 7, 8, 10, 6]
     assert ws_console.order_teams(teams, order_ids) == [
-        "AUBREY", "FWD", "DRAKE", "CCT", "SLAY", "LEWE", "HH", "RRT", "PITTS", "ME",
+        "TEAM2", "TEAM5", "TEAM1", "TEAM4", "TEAM11", "TEAM3", "TEAM7", "TEAM8", "TEAM10", "MARK",
     ]
 
 
 def test_order_teams_trails_unseen_teams_in_their_own_order():
-    teams = ["AUBREY", "CCT", "DRAKE", "FWD", "HH", "LEWE", "ME", "PITTS", "RRT", "SLAY"]
-    order_ids = [4, 1, 2]     # only CCT, DRAKE, AUBREY have nominated so far
+    teams = ["TEAM2", "TEAM4", "TEAM1", "TEAM5", "TEAM7", "TEAM3", "MARK", "TEAM10", "TEAM8", "TEAM11"]
+    order_ids = [4, 1, 2]     # only TEAM4, TEAM1, TEAM2 have nominated so far
     assert ws_console.order_teams(teams, order_ids) == [
-        "CCT", "DRAKE", "AUBREY",
-        "FWD", "HH", "LEWE", "ME", "PITTS", "RRT", "SLAY",
+        "TEAM4", "TEAM1", "TEAM2",
+        "TEAM5", "TEAM7", "TEAM3", "MARK", "TEAM10", "TEAM8", "TEAM11",
     ]
 
 
 def test_order_teams_is_stable_across_a_repeat_lap():
-    teams = ["AUBREY", "CCT", "DRAKE"]
+    teams = ["TEAM2", "TEAM4", "TEAM1"]
     order_ids = [4, 1, 2, 4, 1, 2]     # the same cycle repeating
-    assert ws_console.order_teams(teams, order_ids) == ["CCT", "DRAKE", "AUBREY"]
+    assert ws_console.order_teams(teams, order_ids) == ["TEAM4", "TEAM1", "TEAM2"]
 
 
 @pytest.mark.asyncio
@@ -1385,7 +1385,7 @@ async def test_teams_table_follows_the_nomination_order(tmp_path):
             await app._poll()
             await pilot.pause()
         assert app._team_rows == [
-            "AUBREY", "FWD", "DRAKE", "CCT", "SLAY", "LEWE", "HH", "RRT", "PITTS", "ME",
+            "TEAM2", "TEAM5", "TEAM1", "TEAM4", "TEAM11", "TEAM3", "TEAM7", "TEAM8", "TEAM10", "MARK",
         ]
 
 
@@ -1409,16 +1409,16 @@ async def test_teams_table_order_does_not_reshuffle_on_a_repeat_lap(tmp_path):
 async def test_selected_team_survives_a_nomination_order_change(tmp_path):
     app, ws, state = make_app(tmp_path)
     async with app.run_test() as pilot:
-        app._run_command("team CCT")
+        app._run_command("team TEAM4")
         await pilot.pause()
-        ws.feed(draft_ws.Nomination(4, 25000))     # CCT nominates, learning slot 0
+        ws.feed(draft_ws.Nomination(4, 25000))     # TEAM4 nominates, learning slot 0
         await app._poll()
         await pilot.pause()
-        ws.feed(draft_ws.Nomination(2, 25000))     # AUBREY nominates next, reordering
+        ws.feed(draft_ws.Nomination(2, 25000))     # TEAM2 nominates next, reordering
         await app._poll()
         await pilot.pause()
-        assert app.selected_team == "CCT"
-        assert app.team_list.cursor_row == app._team_rows.index("CCT")
+        assert app.selected_team == "TEAM4"
+        assert app.team_list.cursor_row == app._team_rows.index("TEAM4")
 
 
 @pytest.mark.asyncio
@@ -1429,13 +1429,13 @@ async def test_teams_table_marks_the_on_clock_team(tmp_path):
     already means "this is my team"), since a team can be both at once."""
     app, ws, state = make_app(tmp_path)
     async with app.run_test() as pilot:
-        ws.feed(draft_ws.Nomination(4, 25000))     # CCT on the clock
+        ws.feed(draft_ws.Nomination(4, 25000))     # TEAM4 on the clock
         await app._poll()
         await pilot.pause()
         styles = {app.team_list.get_row_at(i)[0].plain: app.team_list.get_row_at(i)[0].style
                   for i in range(app.team_list.row_count)}
-        assert "reverse" in styles["CCT"]
-        assert all("reverse" not in style for team, style in styles.items() if team != "CCT")
+        assert "reverse" in styles["TEAM4"]
+        assert all("reverse" not in style for team, style in styles.items() if team != "TEAM4")
 
 
 @pytest.mark.asyncio
@@ -1447,7 +1447,7 @@ async def test_teams_table_composes_bold_and_reverse_for_our_own_turn(tmp_path):
         await pilot.pause()
         style = next(app.team_list.get_row_at(i)[0].style
                      for i in range(app.team_list.row_count)
-                     if app.team_list.get_row_at(i)[0].plain == "ME")
+                     if app.team_list.get_row_at(i)[0].plain == "MARK")
         assert "reverse" in style
         assert "bold" in style
 
@@ -1468,15 +1468,15 @@ async def test_status_guardrails_stay_on_my_team_while_scouting_another(tmp_path
     are guardrails about MY roster -- they must not follow the roster
     panel's selection over to whichever team is being scouted."""
     app, ws, state = make_app(tmp_path, rows=QB_FIXTURE_ROWS)
-    state.record("Josh Allen", "QB", 60, "ME")   # bye week 7
+    state.record("Josh Allen", "QB", 60, "MARK")   # bye week 7
     async with app.run_test() as pilot:
-        app._run_command("team CCT")
+        app._run_command("team TEAM4")
         await pilot.pause()
         ws.feed(draft_ws.Bid(4, 3916387, 30, 25000, 12731))   # Lamar Jackson, also bye 7
         await app._poll()
         await pilot.pause()
         assert "Bye clash" in app.status.bye_line
-        assert app.status.max_bid_amount == state.max_bid("ME")
+        assert app.status.max_bid_amount == state.max_bid("MARK")
 
 
 @pytest.mark.asyncio
@@ -1499,7 +1499,7 @@ async def test_board_hides_sold_players(tmp_path):
     """The board is the full priced pool, not just the starred set -- once
     Jefferson sells, every other undrafted fixture player stays visible."""
     app, ws, state = make_app(tmp_path)
-    state.record("Justin Jefferson", "WR", 52, "HH")
+    state.record("Justin Jefferson", "WR", 52, "TEAM7")
     async with app.run_test() as pilot:
         app._reload_board()
         await pilot.pause()
@@ -2043,7 +2043,7 @@ async def test_command_undo_is_not_available_in_ws_mode(tmp_path):
     auto-recorded sale would just come back at the next INIT anyway. The
     plain REST console's own 'undo' is unaffected and keeps working."""
     app, ws, state = make_app(tmp_path)
-    state.record("Justin Jefferson", "WR", 52, "ME")
+    state.record("Justin Jefferson", "WR", 52, "MARK")
     async with app.run_test() as pilot:
         app._run_command("undo")
         await pilot.pause()
@@ -2185,14 +2185,14 @@ async def test_sold_command_toggles_drafted_players_on_the_board(tmp_path):
     adds them back in (with who bought them), :sold off returns to the
     available-only default."""
     app, ws, state = make_app(tmp_path)
-    state.record("Bijan Robinson", "RB", 43, "CCT")
+    state.record("Bijan Robinson", "RB", 43, "TEAM4")
     async with app.run_test() as pilot:
         await pilot.pause()
         assert "Bijan Robinson" not in [r.name for r in app._board_rows]
         app._run_command("sold on")
         await pilot.pause()
         row = next(r for r in app._board_rows if r.name == "Bijan Robinson")
-        assert row.owner == "CCT"
+        assert row.owner == "TEAM4"
         app._run_command("sold off")
         await pilot.pause()
         assert "Bijan Robinson" not in [r.name for r in app._board_rows]
@@ -2201,7 +2201,7 @@ async def test_sold_command_toggles_drafted_players_on_the_board(tmp_path):
 @pytest.mark.asyncio
 async def test_sold_only_shows_just_drafted_players(tmp_path):
     app, ws, state = make_app(tmp_path)
-    state.record("Bijan Robinson", "RB", 43, "CCT")
+    state.record("Bijan Robinson", "RB", 43, "TEAM4")
     async with app.run_test() as pilot:
         app._run_command("sold only")
         await pilot.pause()
@@ -2220,7 +2220,7 @@ async def test_sold_command_rejects_an_unknown_mode(tmp_path):
 @pytest.mark.asyncio
 async def test_clear_command_also_resets_the_sold_filter(tmp_path):
     app, ws, state = make_app(tmp_path)
-    state.record("Bijan Robinson", "RB", 43, "CCT")
+    state.record("Bijan Robinson", "RB", 43, "TEAM4")
     async with app.run_test() as pilot:
         app._run_command("sold on")
         await pilot.pause()
@@ -2233,20 +2233,20 @@ async def test_clear_command_also_resets_the_sold_filter(tmp_path):
 @pytest.mark.asyncio
 async def test_drafted_board_row_is_dimmed_with_owner_in_need_cell(tmp_path):
     app, ws, state = make_app(tmp_path)
-    state.record("Bijan Robinson", "RB", 43, "CCT")
+    state.record("Bijan Robinson", "RB", 43, "TEAM4")
     async with app.run_test() as pilot:
         app._run_command("sold on")
         await pilot.pause()
         row = next(r for r in app._board_rows if r.name == "Bijan Robinson")
         cells = app._board_cells(row, {}, {})
-    assert str(cells[4]) == "CCT"          # Need column shows the owner
+    assert str(cells[4]) == "TEAM4"          # Need column shows the owner
     assert all(c.style == "dim" for c in cells if str(c))
 
 
 @pytest.mark.asyncio
 async def test_nominate_refuses_an_already_drafted_board_row(tmp_path):
     app, ws, state = make_app(tmp_path)
-    state.record("Bijan Robinson", "RB", 43, "CCT")
+    state.record("Bijan Robinson", "RB", 43, "TEAM4")
     async with app.run_test() as pilot:
         ws.feed(draft_ws.Nomination(6, 25000))     # config.MY_TEAM_ID is 6
         await app._poll()
@@ -2345,7 +2345,7 @@ async def test_reload_falls_back_to_row_zero_when_the_highlighted_player_is_take
     async with app.run_test() as pilot:
         app.nominations.move_cursor(row=1)  # highlight Kenneth Walker III
         assert app._board_rows[app.nominations.cursor_row].name == "Kenneth Walker III"
-        state.record("Kenneth Walker III", "RB", 38, "HH")
+        state.record("Kenneth Walker III", "RB", 38, "TEAM7")
         app._reload_board()
         await pilot.pause()
         assert app._board_rows[app.nominations.cursor_row].name == "Justin Jefferson"
@@ -2408,7 +2408,7 @@ async def test_sold_flags_a_mismatched_duplicate_loudly(tmp_path):
     """A stale record from an unrelated earlier practice draft, for the same
     real player, must not be mistaken for a harmless by-hand duplicate."""
     app, ws, state = make_app(tmp_path)
-    state.record_pick("Bijan Robinson", "RB", 40, "HH", espn_pick_id=9999999)
+    state.record_pick("Bijan Robinson", "RB", 40, "TEAM7", espn_pick_id=9999999)
     async with app.run_test() as pilot:
         ws.feed(draft_ws.Sold(4, 3915511, 1, 54, 0))    # Bijan Robinson, different team/price
         await app._poll()
@@ -2427,7 +2427,7 @@ async def test_sold_flags_a_mismatched_duplicate_loudly(tmp_path):
 @pytest.mark.asyncio
 async def test_sold_stays_quiet_for_a_genuine_matching_duplicate(tmp_path):
     app, ws, state = make_app(tmp_path)
-    state.record("Bijan Robinson", "RB", 54, "CCT")
+    state.record("Bijan Robinson", "RB", 54, "TEAM4")
     async with app.run_test() as pilot:
         ws.feed(draft_ws.Sold(4, 3915511, 1, 54, 0))    # same team, same price
         await app._poll()
@@ -2495,7 +2495,7 @@ async def test_bid_watchdog_does_not_fire_on_a_bid_that_landed_then_got_outbid(t
 
 @pytest.mark.asyncio
 async def test_self_bid_guard_holds_when_my_team_label_diverges_from_config(tmp_path):
-    """config.TEAMS[config.MY_TEAM_ID] is 'ME', but state.my_team can be
+    """config.TEAMS[config.MY_TEAM_ID] is 'MARK', but state.my_team can be
     overridden (--my-team, or a persisted value) to something else. The
     self-bid guard has to key off ESPN team id, not the label, or it
     silently stops refusing self-bids the moment the two diverge."""
@@ -2515,7 +2515,7 @@ async def test_self_bid_guard_holds_when_my_team_label_diverges_from_config(tmp_
 async def test_watchdog_confirms_a_bid_when_my_team_label_diverges_from_config(tmp_path):
     """Same divergence as above, but for the watchdog's confirm check: it
     must still recognize a bid confirmed under team id 6 as ours even when
-    state.my_team isn't 'ME'."""
+    state.my_team isn't 'MARK'."""
     app, ws, state = make_app(tmp_path)
     state.my_team = "QBK"
     async with app.run_test() as pilot:
@@ -2661,8 +2661,8 @@ async def test_roster_nfl_column_shows_the_pro_team_or_a_dash(tmp_path):
     has no pro_team to show, same fallback RosterTable's other columns
     already use."""
     app, ws, state = make_app(tmp_path)
-    state.record("Justin Jefferson", "WR", 52, "ME")
-    state.record("Undrafted Kicker", "K", 1, "ME")
+    state.record("Justin Jefferson", "WR", 52, "MARK")
+    state.record("Undrafted Kicker", "K", 1, "MARK")
     async with app.run_test() as pilot:
         app._refresh_panels()
         await pilot.pause()
@@ -2695,13 +2695,13 @@ async def test_board_need_column_flags_unfilled_starters_and_targets(tmp_path):
     reads differently from unfilled bench depth once starters are covered,
     and a fully covered position reads as neither."""
     app, ws, state = make_app(tmp_path, rows=QB_FIXTURE_ROWS)
-    state.record("Josh Allen", "QB", 60, "ME")
-    state.record("Lamar Jackson", "QB", 40, "ME")   # 2 starting QB slots filled
+    state.record("Josh Allen", "QB", 60, "MARK")
+    state.record("Lamar Jackson", "QB", 40, "MARK")   # 2 starting QB slots filled
     async with app.run_test() as pilot:
         app._reload_board()
         await pilot.pause()
-        needs = state.needs("ME")
-        targets = state.targets("ME")
+        needs = state.needs("MARK")
+        targets = state.targets("MARK")
 
         rb_marker = app._need_marker("RB", needs, targets)   # 0/2 starters
         qb_marker = app._need_marker("QB", needs, targets)   # 2/2 starters, 2/3 target
@@ -2713,10 +2713,10 @@ async def test_board_need_column_flags_unfilled_starters_and_targets(tmp_path):
         for pos in ("RB", "RB", "RB", "RB", "WR", "WR", "WR", "WR", "WR",
                     "TE", "TE", "D/ST", "K", "Jayden Daniels"):
             if pos == "Jayden Daniels":
-                state.record(pos, "QB", 1, "ME")
+                state.record(pos, "QB", 1, "MARK")
             else:
-                state.record(f"Filler {pos} {state.roster_count('ME')}", pos, 1, "ME")
-        needs, targets = state.needs("ME"), state.targets("ME")
+                state.record(f"Filler {pos} {state.roster_count('MARK')}", pos, 1, "MARK")
+        needs, targets = state.needs("MARK"), state.targets("MARK")
         complete_marker = app._need_marker("RB", needs, targets)
         assert str(complete_marker) == ""
 
@@ -2775,8 +2775,8 @@ async def test_the_nominated_sound_does_not_fire_for_a_covered_position(tmp_path
     a third QB coming up on the clock isn't worth a nudge."""
     app, ws, state = make_app(tmp_path, rows=QB_FIXTURE_ROWS)
     app.sounds = FakeSoundPlayer()
-    state.record("Josh Allen", "QB", 60, "ME")
-    state.record("Lamar Jackson", "QB", 50, "ME")
+    state.record("Josh Allen", "QB", 60, "MARK")
+    state.record("Lamar Jackson", "QB", 50, "MARK")
     async with app.run_test() as pilot:
         ws.feed(draft_ws.Bid(4, 4426348, 1, 25000, 25000))   # Jayden Daniels, QB
         await app._poll()
@@ -2874,7 +2874,7 @@ async def test_five_second_cue_is_silent_when_we_cannot_afford_to_outbid(tmp_pat
     make."""
     app, ws, state = make_app(tmp_path)
     app.sounds = FakeSoundPlayer()
-    state.record("Burned Budget", "QB", 185, "ME")   # max_bid("ME") now $1
+    state.record("Burned Budget", "QB", 185, "MARK")   # max_bid("MARK") now $1
     async with app.run_test() as pilot:
         ws.feed(draft_ws.Clock(state=2, remaining_ms=9500,
                                 high_bid_team=4, player_id=3915514, high_bid_amount=30))
@@ -2894,8 +2894,8 @@ async def test_five_second_cue_is_silent_when_the_position_is_not_a_starting_nee
     get -- and a third QB on the clock isn't worth a nudge."""
     app, ws, state = make_app(tmp_path, rows=QB_FIXTURE_ROWS)
     app.sounds = FakeSoundPlayer()
-    state.record("Josh Allen", "QB", 60, "ME")
-    state.record("Lamar Jackson", "QB", 50, "ME")
+    state.record("Josh Allen", "QB", 60, "MARK")
+    state.record("Lamar Jackson", "QB", 50, "MARK")
     async with app.run_test() as pilot:
         ws.feed(draft_ws.Clock(state=2, remaining_ms=9500,
                                 high_bid_team=4, player_id=4426348, high_bid_amount=20))

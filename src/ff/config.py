@@ -124,17 +124,17 @@ TRADE_DEADLINE = "2026-12-04T00:00:00-08:00"
 
 DIVISIONS = {
     "East": [
-        "Love The Drake",
-        "Nabers think im selling dope",
+        "Team 1",
+        "Team 3",
         "Team 5",
         "Team 7",
         "Team 11",
     ],
     "West": [
-        "Aubrey's Revenge",
+        "Team 2",
         "Team 4",
-        "The QB's Knees",
-        "Rhodric's Rowdy Team",
+        "Mark's Mathletes",
+        "Team 8",
         "Team 10",
     ],
 }
@@ -145,16 +145,16 @@ DIVISIONS = {
 MY_TEAM_ID = 6
 
 TEAMS = {
-    1: "DRAKE",   # Love The Drake
-    2: "AUBREY",  # Aubrey's Revenge
-    3: "LEWE",    # Nabers think im selling dope
-    4: "CCT",     # Team 4
-    5: "FWD",     # Team 5
-    6: "ME",      # The QB's Knees
-    7: "HH",      # Team 7
-    8: "RRT",     # Rhodric's Rowdy Team
-    10: "PITTS",  # Team 10
-    11: "SLAY",   # Team 11
+    1: "TEAM1",   # Team 1
+    2: "TEAM2",   # Team 2
+    3: "TEAM3",    # Team 3
+    4: "TEAM4", # Team 4
+    5: "TEAM5",    # Team 5
+    6: "MARK",    # Mark's Mathletes
+    7: "TEAM7",  # Team 7
+    8: "TEAM8", # Team 8
+    10: "TEAM10",    # Team 10
+    11: "TEAM11",  # Team 11
 }
 
 

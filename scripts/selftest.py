@@ -118,13 +118,13 @@ def test_draft_sync() -> None:
     assert state.all_teams() == sorted(config.TEAMS.values()), \
         "all_teams should be seeded from config.TEAMS, not just recorded purchases"
 
-    recorded = state.record_pick("Jahmyr Gibbs", "RB", 46, "ME", espn_pick_id=2)
-    duplicate = state.record_pick("Jahmyr Gibbs", "RB", 46, "ME", espn_pick_id=2)
+    recorded = state.record_pick("Jahmyr Gibbs", "RB", 46, "MARK", espn_pick_id=2)
+    duplicate = state.record_pick("Jahmyr Gibbs", "RB", 46, "MARK", espn_pick_id=2)
     assert recorded and not duplicate, "re-polling the same pick id must not double-record"
-    assert state.spent_by("ME") == 46
+    assert state.spent_by("MARK") == 46
 
     state.undo()
-    resurfaced = state.record_pick("Jahmyr Gibbs", "RB", 46, "ME", espn_pick_id=2)
+    resurfaced = state.record_pick("Jahmyr Gibbs", "RB", 46, "MARK", espn_pick_id=2)
     assert not resurfaced, "a pick just undone should stay suppressed for this session"
 
     scratch_path.unlink(missing_ok=True)
